@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="description" content="石垣島 フサキビーチリゾート 滞在中の旅行コンパニオンアプリ">
+  <meta name="theme-color" content="#0e7490" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#062a33" media="(prefers-color-scheme: dark)">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="フサキ旅">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>フサキビーチリゾート 旅のお供</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icon.svg">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="app-header">
+    <div class="app-header__inner">
+      <span class="app-header__mark" aria-hidden="true">🏖</span>
+      <div class="app-header__text">
+        <h1 class="app-header__title" id="header-title">ホーム</h1>
+        <p class="app-header__sub" id="header-sub">フサキビーチリゾート</p>
+      </div>
+    </div>
+  </header>
+
+  <main id="main">
+    <section class="panel" id="panel-home" role="tabpanel" aria-labelledby="tab-home"></section>
+    <section class="panel" id="panel-schedule" role="tabpanel" aria-labelledby="tab-schedule" hidden></section>
+    <section class="panel" id="panel-resort" role="tabpanel" aria-labelledby="tab-resort" hidden></section>
+    <section class="panel" id="panel-checklist" role="tabpanel" aria-labelledby="tab-checklist" hidden></section>
+    <section class="panel" id="panel-memo" role="tabpanel" aria-labelledby="tab-memo" hidden></section>
+  </main>
+
+  <nav class="tabbar" role="tablist" aria-label="メインナビゲーション">
+    <button class="tabbar__btn is-active" id="tab-home" role="tab" aria-selected="true" aria-controls="panel-home" data-tab="home">
+      <span class="tabbar__icon" aria-hidden="true">🏖</span><span class="tabbar__label">ホーム</span>
+    </button>
+    <button class="tabbar__btn" id="tab-schedule" role="tab" aria-selected="false" aria-controls="panel-schedule" data-tab="schedule">
+      <span class="tabbar__icon" aria-hidden="true">📅</span><span class="tabbar__label">予定</span>
+    </button>
+    <button class="tabbar__btn" id="tab-resort" role="tab" aria-selected="false" aria-controls="panel-resort" data-tab="resort">
+      <span class="tabbar__icon" aria-hidden="true">🏨</span><span class="tabbar__label">リゾート</span>
+    </button>
+    <button class="tabbar__btn" id="tab-checklist" role="tab" aria-selected="false" aria-controls="panel-checklist" data-tab="checklist">
+      <span class="tabbar__icon" aria-hidden="true">✅</span><span class="tabbar__label">準備</span>
+    </button>
+    <button class="tabbar__btn" id="tab-memo" role="tab" aria-selected="false" aria-controls="panel-memo" data-tab="memo">
+      <span class="tabbar__icon" aria-hidden="true">📝</span><span class="tabbar__label">メモ</span>
+    </button>
+  </nav>
+
+  <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+
+  <script src="data/resort-data.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

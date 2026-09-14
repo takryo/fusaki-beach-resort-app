@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="海に沈むサンセット">
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#0e7490"/>
+      <stop offset="46%" stop-color="#38bdf8"/>
+      <stop offset="72%" stop-color="#fdba74"/>
+      <stop offset="100%" stop-color="#f97316"/>
+    </linearGradient>
+    <linearGradient id="sun" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#fef3c7"/>
+      <stop offset="55%" stop-color="#fbbf24"/>
+      <stop offset="100%" stop-color="#f97316"/>
+    </linearGradient>
+    <linearGradient id="sea" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#0891b2"/>
+      <stop offset="100%" stop-color="#0c4a5e"/>
+    </linearGradient>
+    <clipPath id="rounded">
+      <rect x="0" y="0" width="512" height="512" rx="112" ry="112"/>
+    </clipPath>
+  </defs>
+
+  <g clip-path="url(#rounded)">
+    <!-- 空 -->
+    <rect width="512" height="512" fill="url(#sky)"/>
+
+    <!-- 夕日 -->
+    <circle cx="256" cy="252" r="94" fill="url(#sun)"/>
+
+    <!-- 海 -->
+    <path d="M0 312 H512 V512 H0 Z" fill="url(#sea)"/>
+
+    <!-- 海面に映る光の道 -->
+    <g fill="#fcd34d" opacity="0.72">
+      <rect x="176" y="330" width="160" height="12" rx="6"/>
+      <rect x="156" y="360" width="200" height="11" rx="5.5"/>
+      <rect x="188" y="390" width="136" height="10" rx="5"/>
+      <rect x="164" y="418" width="184" height="9" rx="4.5"/>
+    </g>
+
+    <!-- 波 -->
+    <path d="M0 456 q42 -22 84 0 t84 0 t84 0 t84 0 t84 0 t84 0 V512 H0 Z"
+          fill="#ffffff" opacity="0.24"/>
+    <path d="M0 482 q42 -20 84 0 t84 0 t84 0 t84 0 t84 0 t84 0 V512 H0 Z"
+          fill="#ffffff" opacity="0.34"/>
+  </g>
+</svg>
