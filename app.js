@@ -298,6 +298,8 @@
     noteForm: null,       // null | { id: string|null, title, body }
     souvenirFormOpen: false,
     openCategories: {},   // リゾート情報アコーディオンの開閉
+    poiForm: null,        // null | { cat, name } … 施設カード内の「予定に追加」フォーム
+    openPoi: {},          // 予定id → 施設情報を展開中か
     shareJoinOpen: false, // 「共有IDを入力して参加」欄の開閉
     shareError: null,     // 共有カードのインラインエラー
     shareErrorDetail: null, // 失敗したプロバイダと理由(原因調査用の一行)
@@ -1019,12 +1021,14 @@
     } else {
       body = items.map(function (e) {
         return '' +
-          '<div class="item">' +
+          '<div class="item item--sch">' +
             '<div class="item__time' + (e.time ? '' : ' is-empty') + '">' + esc(e.time || '終日') + '</div>' +
             '<div class="item__body">' +
               '<div class="item__title">' + esc(e.title) + '</div>' +
               (e.note ? '<div class="item__note">' + esc(e.note) + '</div>' : '') +
+              renderPoiRefChip(e) +
             '</div>' +
+            renderPoiRefCard(e) +
           '</div>';
       }).join('');
     }
@@ -1135,11 +1139,12 @@
 
   function renderScheduleItem(e) {
     return '' +
-      '<div class="item" data-row="' + esc(e.id) + '">' +
+      '<div class="item item--sch" data-row="' + esc(e.id) + '">' +
         '<div class="item__time' + (e.time ? '' : ' is-empty') + '">' + esc(e.time || '終日') + '</div>' +
         '<div class="item__body">' +
           '<div class="item__title">' + esc(e.title) + '</div>' +
           (e.note ? '<div class="item__note">' + esc(e.note) + '</div>' : '') +
+          renderPoiRefChip(e) +
         '</div>' +
         '<div class="item__actions">' +
           '<button type="button" class="btn btn--icon btn--ghost" data-act="sch-edit" data-id="' + esc(e.id) + '" aria-label="編集">✏️</button>' +
@@ -1150,6 +1155,7 @@
           '<button type="button" class="btn btn--icon btn--danger" data-act="sch-delete" data-id="' + esc(e.id) + '">削除</button>' +
           '<button type="button" class="btn btn--icon btn--ghost" data-act="cancel-delete">戻す</button>' +
         '</div>' +
+        renderPoiRefCard(e) +
       '</div>';
   }
 
@@ -1188,7 +1194,9 @@
               '<span class="accordion__chev" aria-hidden="true">▼</span>' +
             '</button>' +
             '<div class="accordion__body">' +
-              (items.length ? items.map(renderPoi).join('') : '<p class="small muted" style="padding-top:12px">情報がありません。</p>') +
+              (items.length
+                ? items.map(function (poiItem) { return renderPoi(poiItem, id, 'resort'); }).join('')
+                : '<p class="small muted" style="padding-top:12px">情報がありません。</p>') +
             '</div>' +
           '</section>';
       }).join('');
@@ -1223,7 +1231,8 @@
       '</div>';
   }
 
-  function renderLinkChips(obj) {
+  /** 電話・公式サイト・地図のchip(配列で返す) */
+  function linkChips(obj) {
     var chips = [];
     var tel = telHref(obj.tel);
     if (tel) chips.push('<a class="chip" href="' + esc(tel) + '">📞 電話する</a>');
@@ -1231,6 +1240,11 @@
     if (url) chips.push('<a class="chip" href="' + esc(url) + '" target="_blank" rel="noopener noreferrer">🔗 公式サイト</a>');
     var map = safeUrl(obj.mapUrl);
     if (map) chips.push('<a class="chip" href="' + esc(map) + '" target="_blank" rel="noopener noreferrer">🗺 地図</a>');
+    return chips;
+  }
+
+  function renderLinkChips(obj) {
+    var chips = linkChips(obj);
     return chips.length ? '<div class="chip-row">' + chips.join('') + '</div>' : '';
   }
 
@@ -1241,12 +1255,31 @@
     unknown: { cls: 'unknown', label: '👧 要確認' }
   };
 
-  function renderPoi(item) {
+  /**
+   * 施設カードを描く。
+   * @param item   施設データ
+   * @param catId  カテゴリid(予定への参照に使う)
+   * @param mode   'resort' … リゾート情報タブ(「予定に追加」ボタンあり)
+   *               'ref'    … 予定から参照して展開したとき(ボタンなし)
+   */
+  function renderPoi(item, catId, mode) {
     if (!item || typeof item !== 'object') return '';
     var meta = '';
     if (item.hours) meta += '<span>🕒 ' + esc(item.hours) + '</span>';
     if (item.location) meta += '<span>📍 ' + esc(item.location) + '</span>';
     var kb = KIDS_BADGE[item.kids] || null;
+
+    var chips = linkChips(item);
+    var formOpen = false;
+    if (mode !== 'ref') {
+      formOpen = !!(ui.poiForm && ui.poiForm.cat === catId && ui.poiForm.name === item.name);
+      if (!formOpen) {
+        chips.unshift(
+          '<button type="button" class="chip chip--btn chip--add" data-act="poi-add-open" ' +
+            'data-cat="' + esc(catId || '') + '" data-name="' + esc(item.name || '') + '">📅 予定に追加</button>'
+        );
+      }
+    }
 
     return '' +
       '<article class="poi">' +
@@ -1257,8 +1290,96 @@
         (meta ? '<div class="poi__meta">' + meta + '</div>' : '') +
         (item.tips ? '<p class="poi__tips">💡 ' + esc(item.tips) + '</p>' : '') +
         (item.kidsNote ? '<p class="poi__kids">👧 ' + esc(item.kidsNote) + '</p>' : '') +
-        renderLinkChips(item) +
+        (chips.length ? '<div class="chip-row">' + chips.join('') + '</div>' : '') +
+        (formOpen ? renderPoiAddForm(item, catId) : '') +
       '</article>';
+  }
+
+  /** 施設カード内に開く「予定に追加」フォーム */
+  function renderPoiAddForm(item, catId) {
+    var trip = state.trip || {};
+    var range = '';
+    if (trip.start) range += ' min="' + esc(trip.start) + '"';
+    if (trip.end) range += ' max="' + esc(trip.end) + '"';
+
+    // min/max は日付ピッカーのヒント。旅行期間外も選べるよう novalidate にして、
+    // ブラウザ既定の検証バルーンではなくアプリ側で処理する。
+    return '' +
+      '<form class="form poi-form" data-form="poi-add" novalidate ' +
+          'data-cat="' + esc(catId || '') + '" data-name="' + esc(item.name || '') + '">' +
+        '<div class="form__title">📅 「' + esc(item.name || '') + '」を予定に追加</div>' +
+        '<div class="field-row">' +
+          '<div class="field">' +
+            '<label class="field__label" for="poi-date">日付</label>' +
+            '<input class="input" type="date" id="poi-date" name="date" value="' + esc(defaultPoiDate()) + '"' + range + '>' +
+          '</div>' +
+          '<div class="field field--narrow">' +
+            '<label class="field__label" for="poi-time">時刻(任意)</label>' +
+            '<input class="input" type="time" id="poi-time" name="time">' +
+          '</div>' +
+        '</div>' +
+        '<div class="field">' +
+          '<label class="field__label" for="poi-note">メモ(任意)</label>' +
+          '<textarea class="textarea textarea--sm" id="poi-note" name="note" placeholder="予約番号・待ち合わせ場所など" maxlength="500"></textarea>' +
+        '</div>' +
+        '<div class="btn-row">' +
+          '<button type="submit" class="btn btn--sm btn--primary">追加する</button>' +
+          '<button type="button" class="btn btn--sm btn--ghost" data-act="poi-add-cancel">キャンセル</button>' +
+        '</div>' +
+        (item.hours ? '<p class="poi-form__hours">🕒 営業時間: ' + esc(item.hours) + '</p>' : '') +
+      '</form>';
+  }
+
+  /** 追加フォームの初期日付: 旅行期間内に収まるように寄せる */
+  function defaultPoiDate() {
+    var today = todayISO();
+    var trip = state.trip || {};
+    if (!trip.start) return today;
+    if (diffDays(today, trip.start) > 0) return trip.start;      // 出発前 → 初日
+    if (trip.end && diffDays(trip.end, today) > 0) return trip.end; // 終了後 → 最終日
+    return today;
+  }
+
+  /**
+   * 予定の poi 参照から施設データを探す(カテゴリid + 施設名)。
+   * RESORT_DATA が未読み込み / 名前が変わった場合は null を返す(例外は出さない)。
+   */
+  function findPoi(poi) {
+    try {
+      if (!poi || !poi.name) return null;
+      var data = window.RESORT_DATA;
+      if (!data || !Array.isArray(data.categories)) return null;
+      for (var i = 0; i < data.categories.length; i++) {
+        var cat = data.categories[i];
+        if (!cat || cat.id !== poi.cat) continue;
+        var items = Array.isArray(cat.items) ? cat.items : [];
+        for (var j = 0; j < items.length; j++) {
+          if (items[j] && items[j].name === poi.name) return { item: items[j], catId: cat.id };
+        }
+      }
+      return null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  /** 予定に付ける「🏨 施設情報」chip(参照できないときは空文字) */
+  function renderPoiRefChip(e) {
+    if (!findPoi(e.poi)) return '';
+    var open = !!ui.openPoi[e.id];
+    return '' +
+      '<div class="chip-row">' +
+        '<button type="button" class="chip chip--btn" data-act="poi-toggle" data-id="' + esc(e.id) + '" ' +
+          'aria-expanded="' + (open ? 'true' : 'false') + '">🏨 施設情報</button>' +
+      '</div>';
+  }
+
+  /** 展開された施設カード(閉じているとき・参照できないときは空文字) */
+  function renderPoiRefCard(e) {
+    if (!ui.openPoi[e.id]) return '';
+    var found = findPoi(e.poi);
+    if (!found) return '';
+    return '<div class="poi-ref">' + renderPoi(found.item, found.catId, 'ref') + '</div>';
   }
 
   /* --- 5-4. チェックリスト ---------------------------------------------- */
@@ -1564,6 +1685,27 @@
       toast('予定を削除しました');
     },
 
+    /* リゾート情報 ⇄ 予定 の連携 */
+    'poi-add-open': function (btn) {
+      ui.poiForm = {
+        cat: btn.getAttribute('data-cat') || '',
+        name: btn.getAttribute('data-name') || ''
+      };
+      renderResort();
+      focusFirstField('#poi-date');
+    },
+    'poi-add-cancel': function () {
+      ui.poiForm = null;
+      renderResort();
+    },
+    'poi-toggle': function (btn) {
+      var id = btn.getAttribute('data-id');
+      if (!id) return;
+      if (ui.openPoi[id]) delete ui.openPoi[id];
+      else ui.openPoi[id] = true;
+      renderCurrent();
+    },
+
     /* リゾート情報 */
     'toggle-cat': function (btn) {
       var id = btn.getAttribute('data-id');
@@ -1809,6 +1951,24 @@
       save('schedule');
       ui.scheduleForm = null;
       renderSchedule();
+
+    } else if (kind === 'poi-add') {
+      var poiCat = form.getAttribute('data-cat') || '';
+      var poiName = form.getAttribute('data-name') || '';
+      if (!poiName) { ui.poiForm = null; renderResort(); return; }
+      state.schedule.push({
+        id: uid(),
+        date: val('date') || defaultPoiDate(),
+        time: val('time'),
+        title: poiName,
+        note: val('note'),
+        poi: { cat: poiCat, name: poiName },   // 予定 → 施設情報への参照
+        updatedAt: nowISO()
+      });
+      save('schedule');
+      ui.poiForm = null;
+      renderResort();          // リゾートタブに留まる
+      toast('予定に追加しました');
 
     } else if (kind === 'check-add') {
       var text = val('text');

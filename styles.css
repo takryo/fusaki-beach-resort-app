@@ -988,6 +988,53 @@ a:hover { text-decoration: underline; }
 
 .data-warning strong { display: block; font-size: 13.5px; margin-bottom: 2px; }
 
+/* --- リゾート情報 ⇄ 予定 の連携 ------------------------------------------ */
+
+/* chip をボタンとしても使えるように */
+.chip--btn {
+  font-family: inherit;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.chip--add {
+  background: var(--sunset-soft);
+  color: var(--sunset);
+  border-color: color-mix(in srgb, var(--sunset) 28%, transparent);
+}
+
+/* 施設カード内に開く「予定に追加」フォーム */
+.poi-form { margin-top: 10px; }
+
+.textarea--sm { min-height: 58px; }
+
+.poi-form__hours {
+  margin-top: 8px;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--text-soft);
+  background: var(--surface-sunk);
+  border-radius: var(--radius-sm);
+  padding: 7px 10px;
+  word-break: break-word;
+}
+
+/* 予定の行から施設情報を展開する領域 */
+.item--sch { flex-wrap: wrap; }
+
+.poi-ref {
+  flex: 0 0 100%;
+  width: 100%;
+  margin-top: 10px;
+  padding: 2px 12px 6px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.poi-ref .poi { border-bottom: none; padding-bottom: 4px; }
+.poi-ref .poi__name { font-size: 14px; }
+
 /* --- 家族と共有 ---------------------------------------------------------- */
 .share-card { padding: 15px; }
 
