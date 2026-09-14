@@ -1544,3 +1544,118 @@ polyline.map-area--path {
   .tabbar__label { font-size: 9.5px; }
   .forecast__row { grid-template-columns: 50px 26px 1fr auto; gap: 6px; }
 }
+
+/* --- 館内マップ v3: 客室棟・部屋設定・ルート案内 -------------------------- */
+.map-bldg {
+  fill: var(--surface-2);
+  stroke: var(--border-strong);
+  stroke-width: 1;
+  opacity: .95;
+}
+
+.map-bldg.is-myroom {
+  fill: var(--accent-soft);
+  stroke: var(--accent);
+  stroke-width: 2.5;
+}
+
+.map-bldg__label {
+  font-size: 15px;
+  font-weight: 600;
+  fill: var(--text-soft);
+  text-anchor: middle;
+  dominant-baseline: middle;
+  opacity: 0;
+  transition: opacity .18s ease;
+  pointer-events: none;
+  paint-order: stroke;
+  stroke: var(--surface);
+  stroke-width: 3;
+}
+
+.map-svg.show-bldg-labels .map-bldg__label { opacity: 1; }
+.map-bldg__label.is-myroom { fill: var(--accent); opacity: 1; }
+
+.map-route__line {
+  fill: none;
+  stroke: var(--sunset);
+  stroke-width: 14;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-dasharray: 2 22;
+  animation: route-march 1.2s linear infinite;
+}
+
+@keyframes route-march {
+  from { stroke-dashoffset: 24; }
+  to   { stroke-dashoffset: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .map-route__line { animation: none; }
+}
+
+.map-route__start-dot {
+  fill: var(--surface);
+  stroke: var(--sunset);
+  stroke-width: 3;
+}
+
+.map-route__start-icon {
+  font-size: 22px;
+  text-anchor: middle;
+  dominant-baseline: middle;
+}
+
+.map-room {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.map-room--form {
+  display: block;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 13px;
+}
+
+.map-room__badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-radius: 999px;
+  padding: 8px 14px;
+  font-weight: 700;
+  font-size: 14px;
+}
+
+.field-row--tight {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.field-row--tight .input { flex: 1; min-width: 0; }
+
+.map-route-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  background: var(--sunset-soft);
+  color: var(--sunset);
+  border-radius: var(--radius);
+  padding: 9px 13px;
+  margin-bottom: 10px;
+  font-size: 13.5px;
+}
+
+.map-route-bar__text strong { font-size: 15px; }
+
+.poi__route-hint { margin-top: 7px; }
