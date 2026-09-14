@@ -340,6 +340,37 @@ window.FusakiSync = (function () {
     });
   }
 
+  /* --- 付随データ(写真など) ------------------------------------------
+   * メインドキュメントとは別のエントリに置く。Firebase RTDB では
+   *   rooms/<roomKey>_p_<blobId>.json
+   * となり、rooms/$room のルールに合致しつつ本体(rooms/<roomKey>.json)とは
+   * 別パスなので、同期の PUT と衝突しない。
+   * 容量の大きいデータをメインドキュメントに載せないための仕組み。
+   * ------------------------------------------------------------------ */
+
+  /** blobId から参照を作る。RTDB 以外のプロバイダでは非対応(null) */
+  function blobRefOf(blobId) {
+    if (!meta.ref || meta.ref.provider !== 'fb') return null;
+    var id = String(blobId === null || blobId === undefined ? '' : blobId)
+      .replace(/[^A-Za-z0-9_-]/g, '');
+    if (!id) return null;
+    return { provider: 'fb', host: meta.ref.host, docId: meta.ref.docId + '_p_' + id };
+  }
+
+  /** 付随データを1件取得する。無ければ null */
+  function getBlob(blobId) {
+    var ref = blobRefOf(blobId);
+    if (!ref) return Promise.reject(new Error('共有中ではありません'));
+    return request('GET', docUrl(ref)).then(function (res) {
+      if (res.status === 404) return null;
+      if (!res.ok) throw new Error(labelOf(ref) + ': HTTP ' + res.status);
+      if (isJsonNull(res.text)) return null;
+      var body = jsonOrNull(res.text);
+      if (!body || typeof body !== 'object' || typeof body.data !== 'string') return null;
+      return body.data;
+    });
+  }
+
   /** 同期サイクル用。存在しなければ空ドキュメント扱い(次のPUTで復旧する) */
   function loadDoc(ref) {
     return getRef(ref).then(function (r) { return r.doc; });
@@ -833,6 +864,37 @@ window.FusakiSync = (function () {
     /** 削除マークの間引き(app.js から呼ぶ) */
     tombstoneTtlMs: TOMBSTONE_TTL_MS,
 
+    /* --- 付随データ(写真)---------------------------------------------
+     * メインドキュメントの構造・マージ規則には一切関与しない。
+     * ------------------------------------------------------------------ */
+
+    /** 現在の接続情報。付随データを置けないときは null */
+    getBlobRef: function () {
+      if (!meta.ref || meta.ref.provider !== 'fb') return null;
+      return { provider: 'fb', host: meta.ref.host, roomKey: meta.ref.docId };
+    },
+
+    /** 付随データを保存できる状態か */
+    blobsSupported: function () {
+      return !!(meta.ref && meta.ref.provider === 'fb');
+    },
+
+    getBlob: getBlob,
+
+    /** 付随データを1件保存する */
+    putBlob: function (blobId, dataString) {
+      var ref = blobRefOf(blobId);
+      if (!ref) return Promise.reject(new Error('共有中ではありません'));
+      return putRef(ref, { v: 1, data: String(dataString) });
+    },
+
+    /** 付随データを1件削除する(RTDB は null の PUT が削除) */
+    deleteBlob: function (blobId) {
+      var ref = blobRefOf(blobId);
+      if (!ref) return Promise.resolve(false);
+      return putRef(ref, null).then(function () { return true; }, function () { return false; });
+    },
+
     /* テスト・デバッグ用に内部関数も公開する */
     _internals: {
       mergeDocs: mergeDocs,
@@ -847,7 +909,8 @@ window.FusakiSync = (function () {
       b64urlEncode: b64urlEncode,
       b64urlDecode: b64urlDecode,
       normalizeHost: normalizeHost,
-      providerOrder: providerOrder
+      providerOrder: providerOrder,
+      blobRefOf: blobRefOf
     }
   };
 

@@ -1461,6 +1461,148 @@ polyline.map-area--path {
 .btn[disabled] { opacity: .55; cursor: default; }
 .btn[disabled]:active { transform: none; }
 
+/* --- メモの写真 ---------------------------------------------------------- */
+.photo-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(76px, 1fr));
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.photo-thumb {
+  position: relative;
+  aspect-ratio: 1 / 1;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-sunk);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.photo-thumb--edit { cursor: default; }
+
+.photo-thumb__img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.photo-thumb__note {
+  font-size: 10px;
+  line-height: 1.35;
+  color: var(--text-mute);
+  text-align: center;
+  padding: 4px;
+}
+
+.photo-thumb__remove {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, .58);
+  color: #fff;
+  font-size: 11px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.note-photos { margin-top: 4px; }
+
+.note-photos__pick {
+  display: inline-flex;
+  margin-top: 8px;
+  cursor: pointer;
+}
+
+.note-photos__pick.is-disabled {
+  opacity: .5;
+  cursor: default;
+  pointer-events: none;
+}
+
+.note-photos__error {
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.55;
+  color: var(--danger);
+  background: var(--danger-soft);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  margin-top: 8px;
+}
+
+.note-photos__hint {
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--text-mute);
+  margin-top: 6px;
+}
+
+/* 本文中のリンク */
+.note-card__body a {
+  color: var(--accent);
+  text-decoration: underline;
+  word-break: break-all;
+}
+
+/* --- 写真の全画面プレビュー --- */
+/* display 指定が hidden 属性に勝ってしまうので明示的に打ち消す */
+.photo-viewer[hidden] { display: none; }
+
+.photo-viewer {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  padding-top: calc(20px + env(safe-area-inset-top));
+  padding-bottom: calc(20px + env(safe-area-inset-bottom));
+  background: rgba(6, 22, 28, .93);
+  animation: fade-in .16s ease both;
+}
+
+.photo-viewer__img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  border-radius: var(--radius-sm);
+}
+
+.photo-viewer__close {
+  position: absolute;
+  top: calc(12px + env(safe-area-inset-top));
+  right: 12px;
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, .16);
+  color: #fff;
+  font-size: 16px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+body.is-photo-open { overflow: hidden; }
+
+@media (prefers-reduced-motion: reduce) {
+  .photo-viewer { animation: none; }
+}
+
 /* --- タブバー ------------------------------------------------------------ */
 .tabbar {
   position: fixed;
