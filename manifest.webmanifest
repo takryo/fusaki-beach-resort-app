@@ -1,0 +1,29 @@
+{
+  "name": "フサキビーチリゾート 旅のお供",
+  "short_name": "フサキ旅",
+  "description": "石垣島 フサキビーチリゾート滞在中に使う、天気・旅程・持ち物・メモをまとめた旅行コンパニオンアプリ。",
+  "lang": "ja",
+  "dir": "ltr",
+  "start_url": "./index.html",
+  "scope": "./",
+  "id": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f2f7f8",
+  "theme_color": "#0e7490",
+  "categories": ["travel", "lifestyle", "utilities"],
+  "icons": [
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "maskable"
+    }
+  ]
+}
