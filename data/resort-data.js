@@ -684,7 +684,35 @@ window.RESORT_DATA = {
     }
   ],
 
+  // ホーム画面の「予約」ボタン(重要導線)
+  reservations: [
+    {
+      icon: "🛺",
+      label: "カート予約(順番待ち受付)",
+      url: "https://airwait.jp/WCSP/storeDetail/?storeNo=AKR7551673830&utm_source=qrcode&utm_medium=paper&utm_campaign=AirWait_Cart",
+      note: "場内移動カートのAirWait受付ページ"
+    },
+    {
+      icon: "🍽",
+      label: "レストラン予約(公式)",
+      url: "https://www.fusaki.com/restaurant?utm_source=CI&utm_medium=flier&utm_campaign=2025",
+      note: "館内レストランの空席確認・予約"
+    }
+  ],
+
   links: [
+    {
+      label: "カート予約(AirWait 順番待ち受付)",
+      url: "https://airwait.jp/WCSP/storeDetail/?storeNo=AKR7551673830&utm_source=qrcode&utm_medium=paper&utm_campaign=AirWait_Cart",
+      tel: null,
+      note: "場内移動カートの受付"
+    },
+    {
+      label: "レストラン予約(フサキ公式)",
+      url: "https://www.fusaki.com/restaurant?utm_source=CI&utm_medium=flier&utm_campaign=2025",
+      tel: null,
+      note: "館内レストランの空席確認・予約"
+    },
     {
       label: "石垣島地方気象台(気象庁)",
       url: "https://www.jma-net.go.jp/ishigaki/",

@@ -1049,9 +1049,34 @@
       '</section>';
   }
 
+  /** よく使う予約(カート・レストラン)への大きな導線 */
+  function renderReservationCard() {
+    try {
+      var data = window.RESORT_DATA;
+      var list = (data && Array.isArray(data.reservations)) ? data.reservations : [];
+      var btns = list.map(function (r) {
+        var url = safeUrl(r && r.url);
+        if (!url || !r.label) return '';
+        return '<a class="resv__btn" href="' + esc(url) + '" target="_blank" rel="noopener noreferrer">' +
+          '<span class="resv__icon" aria-hidden="true">' + esc(r.icon || '🎫') + '</span>' +
+          '<span class="resv__text">' + esc(r.label) +
+            (r.note ? '<span class="resv__note">' + esc(r.note) + '</span>' : '') +
+          '</span><span class="resv__arrow" aria-hidden="true">›</span></a>';
+      }).join('');
+      if (!btns) return '';
+      return '<section class="section">' +
+        '<div class="section__head"><h2 class="section__title">🎫 予約</h2></div>' +
+        '<div class="resv">' + btns + '</div>' +
+      '</section>';
+    } catch (e) {
+      return '';
+    }
+  }
+
   function renderHome() {
     var html =
       renderTripHero() +
+      renderReservationCard() +
       '<section class="section">' +
         '<div class="section__head"><h2 class="section__title">🌤 石垣島の天気</h2></div>' +
         renderWeatherCard() +
