@@ -295,7 +295,10 @@
   var ui = {
     tripEditing: false,
     scheduleForm: null,   // null | { id: string|null, date, time, title, note }
-    noteForm: null,       // null | { id: string|null, title, body }
+    noteForm: null,       // null | { id, title, body, photos: [{id,w,h}] }
+    notePhotoNew: null,   // このフォームで新しく追加した写真id
+    notePhotoBusy: false, // 写真を取り込み中
+    notePhotoError: null, // 写真まわりのインラインエラー
     souvenirFormOpen: false,
     openCategories: {},   // リゾート情報アコーディオンの開閉
     poiForm: null,        // null | { cat, name, from } … 施設カード内の「予定に追加」フォーム
@@ -805,6 +808,7 @@
       var k = el.getAttribute('data-keep');
       if (Object.prototype.hasOwnProperty.call(kept, k)) el.value = kept[k];
     });
+    if (typeof hydratePhotos === 'function') hydratePhotos();
   }
 
   function renderCurrent() {
@@ -2266,6 +2270,453 @@
 
   /* --- 5-5. メモ -------------------------------------------------------- */
 
+  /* ======================================================================
+   * 5-5b. メモの本文リンク化と写真添付
+   * ==================================================================== */
+
+  /**
+   * 本文中の http(s) URL をリンクにする。
+   * 「URLで分割 → 非URL部分は esc() → URL部分は safeUrl() で検証してから <a> 化」
+   * の順に組み立てる。esc() 済みの文字列に正規表現をかけないこと(XSS防止)。
+   */
+  function linkifyText(text) {
+    var src = (text === null || text === undefined) ? '' : String(text);
+    var re = /https?:\/\/[^\s<>"'`]+/gi;
+    var out = '';
+    var last = 0;
+    var m;
+
+    while ((m = re.exec(src)) !== null) {
+      out += esc(src.slice(last, m.index));
+
+      var raw = m[0];
+      var tail = '';
+      // 文末の句読点・閉じ括弧はURLに含めない(括弧はURL内に対応する開き括弧が無いときだけ)
+      var trim = /[.,;:!?)\]}、。！？」』]+$/.exec(raw);
+      if (trim) {
+        var cut = trim[0];
+        if (/[)\]}]/.test(cut) && /[([{]/.test(raw)) {
+          cut = cut.replace(/[)\]}]/g, '');
+        }
+        if (cut) {
+          tail = raw.slice(raw.length - cut.length);
+          raw = raw.slice(0, raw.length - cut.length);
+        }
+      }
+
+      var url = safeUrl(raw);   // http(s) 以外はここで弾かれる
+      if (url) {
+        out += '<a href="' + esc(url) + '" target="_blank" rel="noopener noreferrer">' + esc(url) + '</a>';
+      } else {
+        out += esc(raw);
+      }
+      out += esc(tail);
+      last = m.index + m[0].length;
+    }
+    out += esc(src.slice(last));
+    return out;
+  }
+
+  /* --- 写真 ------------------------------------------------------------
+   * メモ本体(同期ドキュメント)には photos: [{id,w,h}] のメタだけを持たせ、
+   * 画像そのもの(dataURL)は
+   *   共有中 … Firebase RTDB の rooms/<roomKey>_p_<photoId>.json
+   *   未共有 … localStorage の photo.<photoId>
+   * に置く。表示時は共有 → ローカルの順に探す。
+   * ------------------------------------------------------------------- */
+
+  var PHOTO_MAX_PER_NOTE = 4;
+  var PHOTO_MAX_EDGE = 1000;       // 長辺
+  var PHOTO_JPEG_QUALITY = 0.72;
+  var PHOTO_MAX_BYTES = 800 * 1024;
+
+  var photoCache = {};             // photoId → dataURL(取得済み)
+  var photoPending = {};           // photoId → Promise(取得中)
+  var photoFailed = {};            // photoId → true(取得に失敗)
+
+  function photoKey(id) {
+    return 'photo.' + id;
+  }
+
+  /** 共有解除時にローカルへ退避できなかった写真(共有中しか見られない) */
+  function sharedOnlyIds() {
+    var list = store.get('photoSharedOnly', []);
+    return Array.isArray(list) ? list : [];
+  }
+
+  function markSharedOnly(id, on) {
+    var list = sharedOnlyIds().filter(function (x) { return x !== id; });
+    if (on) list.push(id);
+    store.set('photoSharedOnly', list);
+  }
+
+  /** base64 dataURL のおおよそのバイト数 */
+  function dataUrlBytes(dataUrl) {
+    var comma = String(dataUrl).indexOf(',');
+    if (comma < 0) return 0;
+    return Math.floor((String(dataUrl).length - comma - 1) * 3 / 4);
+  }
+
+  /**
+   * 画像ファイルを縮小して JPEG の dataURL にする。
+   * HEIC など読めない形式はデコード失敗として reject する。
+   */
+  function compressImageFile(file) {
+    return new Promise(function (resolve, reject) {
+      if (!file || !/^image\//i.test(file.type || '')) {
+        reject(new Error('画像ファイルではありません'));
+        return;
+      }
+      var reader = new FileReader();
+      reader.onerror = function () { reject(new Error('ファイルを読み込めませんでした')); };
+      reader.onload = function () {
+        var img = new Image();
+        img.onerror = function () {
+          reject(new Error('この形式の画像は表示できません(HEICなどは非対応)'));
+        };
+        img.onload = function () {
+          try {
+            var w = img.naturalWidth || img.width;
+            var h = img.naturalHeight || img.height;
+            if (!w || !h) { reject(new Error('画像のサイズを取得できませんでした')); return; }
+            var ratio = Math.min(1, PHOTO_MAX_EDGE / Math.max(w, h));
+            var cw = Math.max(1, Math.round(w * ratio));
+            var ch = Math.max(1, Math.round(h * ratio));
+            var canvas = document.createElement('canvas');
+            canvas.width = cw;
+            canvas.height = ch;
+            var ctx = canvas.getContext('2d');
+            if (!ctx) { reject(new Error('画像を変換できませんでした')); return; }
+            ctx.drawImage(img, 0, 0, cw, ch);
+            var dataUrl = canvas.toDataURL('image/jpeg', PHOTO_JPEG_QUALITY);
+            if (!/^data:image\/jpeg/.test(dataUrl)) {
+              reject(new Error('画像を変換できませんでした'));
+              return;
+            }
+            resolve({ dataUrl: dataUrl, w: cw, h: ch, bytes: dataUrlBytes(dataUrl) });
+          } catch (e) {
+            reject(new Error('画像を変換できませんでした'));
+          }
+        };
+        img.src = reader.result;
+      };
+      reader.readAsDataURL(file);
+    });
+  }
+
+  /** 画像本体を取得する(共有 → ローカルの順)。取得できなければ null */
+  function fetchPhoto(id) {
+    if (Object.prototype.hasOwnProperty.call(photoCache, id)) {
+      return Promise.resolve(photoCache[id]);
+    }
+    if (photoPending[id]) return photoPending[id];
+
+    var local = function () {
+      var data = store.get(photoKey(id), null);
+      return (typeof data === 'string' && data) ? data : null;
+    };
+
+    var p;
+    if (Sync.blobsSupported && Sync.blobsSupported()) {
+      p = Sync.getBlob(id).then(function (data) {
+        return (typeof data === 'string' && data) ? data : local();
+      }, function () {
+        return local();
+      });
+    } else {
+      p = Promise.resolve(local());
+    }
+
+    p = p.then(function (data) {
+      delete photoPending[id];
+      if (data) {
+        photoCache[id] = data;
+        delete photoFailed[id];
+      } else {
+        photoFailed[id] = true;
+      }
+      return data;
+    }, function () {
+      delete photoPending[id];
+      photoFailed[id] = true;
+      return null;
+    });
+
+    photoPending[id] = p;
+    return p;
+  }
+
+  /** 画像本体を保存する。戻り値は Promise<boolean>(false なら保存できなかった) */
+  function storePhoto(id, dataUrl) {
+    photoCache[id] = dataUrl;
+    if (Sync.blobsSupported && Sync.blobsSupported()) {
+      return Sync.putBlob(id, dataUrl).then(function () {
+        markSharedOnly(id, false);
+        return true;
+      }, function () {
+        // 共有側に置けなければローカルへ
+        return store.set(photoKey(id), dataUrl);
+      });
+    }
+    return Promise.resolve(store.set(photoKey(id), dataUrl));
+  }
+
+  /** 画像本体を消す(共有・ローカルの両方) */
+  function removePhotoData(id) {
+    delete photoCache[id];
+    delete photoFailed[id];
+    store.remove(photoKey(id));
+    markSharedOnly(id, false);
+    if (Sync.blobsSupported && Sync.blobsSupported()) {
+      try { Sync.deleteBlob(id); } catch (e) { /* 失敗しても表示には影響しない */ }
+    }
+  }
+
+  /** いまメモから参照されている写真id */
+  function referencedPhotoIds() {
+    var ids = {};
+    (state.notes || []).forEach(function (n) {
+      (Array.isArray(n.photos) ? n.photos : []).forEach(function (ph) {
+        if (ph && ph.id) ids[ph.id] = true;
+      });
+    });
+    return ids;
+  }
+
+  /** 参照されなくなった写真を消す */
+  function purgePhotos(candidateIds) {
+    if (!candidateIds || !candidateIds.length) return;
+    var refs = referencedPhotoIds();
+    candidateIds.forEach(function (id) {
+      if (!refs[id]) removePhotoData(id);
+    });
+  }
+
+  /* --- 共有の開始・解除にあわせた引っ越し --- */
+
+  /** 共有を始めたら、ローカルにしかない写真をアップロードして localStorage を空ける */
+  function uploadLocalPhotos() {
+    if (!(Sync.blobsSupported && Sync.blobsSupported())) return Promise.resolve();
+    var ids = Object.keys(referencedPhotoIds());
+    var chain = Promise.resolve();
+    ids.forEach(function (id) {
+      chain = chain.then(function () {
+        var data = store.get(photoKey(id), null);
+        if (typeof data !== 'string' || !data) return null;
+        return Sync.putBlob(id, data).then(function () {
+          store.remove(photoKey(id));      // 共有側に移したのでローカルは削除
+          markSharedOnly(id, false);
+        }, function () { /* 失敗時はローカルに残す */ });
+      });
+    });
+    return chain;
+  }
+
+  /** 共有を解除する前に、写真をローカルへ退避する */
+  function downloadPhotosToLocal() {
+    if (!(Sync.blobsSupported && Sync.blobsSupported())) return Promise.resolve();
+    var ids = Object.keys(referencedPhotoIds());
+    var chain = Promise.resolve();
+    ids.forEach(function (id) {
+      chain = chain.then(function () {
+        if (typeof store.get(photoKey(id), null) === 'string') return null;   // 既にローカルにある
+        return fetchPhoto(id).then(function (data) {
+          if (!data) { markSharedOnly(id, true); return; }
+          if (!store.set(photoKey(id), data)) markSharedOnly(id, true);       // 容量超過
+          else markSharedOnly(id, false);
+        }, function () { markSharedOnly(id, true); });
+      });
+    });
+    return chain;
+  }
+
+  /* --- 描画 --- */
+
+  function photoThumb(ph, opts) {
+    opts = opts || {};
+    var id = ph && ph.id ? String(ph.id) : '';
+    if (!id) return '';
+    var sharedOnly = sharedOnlyIds().indexOf(id) >= 0;
+    var cached = Object.prototype.hasOwnProperty.call(photoCache, id) ? photoCache[id] : null;
+
+    var inner;
+    if (cached) {
+      inner = '<img class="photo-thumb__img" src="' + esc(cached) + '" alt="' + esc(opts.alt || '写真') + '">';
+    } else if (sharedOnly) {
+      inner = '<span class="photo-thumb__note">共有中のみ<br>閲覧可</span>';
+    } else if (photoFailed[id]) {
+      inner = '<span class="photo-thumb__note">画像を取得<br>できませんでした</span>';
+    } else {
+      inner = '<span class="photo-thumb__note">読み込み中…</span>';
+    }
+
+    var removeBtn = opts.removable
+      ? '<button type="button" class="photo-thumb__remove" data-act="photo-remove" data-id="' + esc(id) + '" aria-label="この写真を削除">✕</button>'
+      : '';
+
+    var tag = opts.removable ? 'div' : 'button';
+    var attrs = opts.removable
+      ? 'class="photo-thumb photo-thumb--edit" data-photo="' + esc(id) + '"'
+      : 'type="button" class="photo-thumb" data-photo="' + esc(id) + '" data-act="photo-open" data-id="' + esc(id) + '"';
+
+    return '<' + tag + ' ' + attrs + '>' + inner + removeBtn + '</' + tag + '>';
+  }
+
+  function photoGrid(photos, opts) {
+    var list = Array.isArray(photos) ? photos.filter(function (p) { return p && p.id; }) : [];
+    if (!list.length) return '';
+    return '<div class="photo-grid">' +
+      list.map(function (ph) { return photoThumb(ph, opts); }).join('') +
+    '</div>';
+  }
+
+  /**
+   * まだ手元にない写真を読み込み、届いたサムネだけを差し替える。
+   * 全体を再描画しないのでちらつかず、スクロール位置も動かない。
+   */
+  function hydratePhotos() {
+    var seen = {};
+    $all('[data-photo]').forEach(function (el) {
+      var id = el.getAttribute('data-photo');
+      if (!id || seen[id]) return;
+      seen[id] = true;
+      if (Object.prototype.hasOwnProperty.call(photoCache, id)) return;
+      if (sharedOnlyIds().indexOf(id) >= 0) return;
+      fetchPhoto(id).then(function (data) {
+        $all('[data-photo="' + (window.CSS && CSS.escape ? CSS.escape(id) : id) + '"]').forEach(function (node) {
+          var note = $('.photo-thumb__note', node);
+          if (data) {
+            var img = document.createElement('img');
+            img.className = 'photo-thumb__img';
+            img.src = data;
+            img.alt = '写真';
+            if (note) note.replaceWith(img);
+            else if (!$('.photo-thumb__img', node)) node.insertBefore(img, node.firstChild);
+          } else if (note) {
+            note.innerHTML = '画像を取得<br>できませんでした';
+          }
+        });
+      });
+    });
+  }
+
+  function openPhotoViewer(id) {
+    var viewer = $('#photo-viewer');
+    var img = $('#photo-viewer-img');
+    if (!viewer || !img) return;
+    var show = function (data) {
+      if (!data) { toast('画像を取得できませんでした'); return; }
+      img.src = data;
+      viewer.hidden = false;
+      document.body.classList.add('is-photo-open');
+    };
+    if (Object.prototype.hasOwnProperty.call(photoCache, id)) show(photoCache[id]);
+    else fetchPhoto(id).then(show);
+  }
+
+  function closePhotoViewer() {
+    var viewer = $('#photo-viewer');
+    var img = $('#photo-viewer-img');
+    if (!viewer) return;
+    viewer.hidden = true;
+    if (img) img.removeAttribute('src');
+    document.body.classList.remove('is-photo-open');
+  }
+
+  /**
+   * 写真の追加・削除でフォームを描き直す前に、入力中のタイトル・本文を
+   * ui.noteForm に取り込む(取り込まないと入力が消えてしまう)。
+   */
+  function captureNoteFormInputs() {
+    if (!ui.noteForm) return;
+    var t = $('#note-title');
+    var b = $('#note-body');
+    if (t) ui.noteForm.title = t.value;
+    if (b) ui.noteForm.body = b.value;
+  }
+
+  /** メモ編集フォームで選ばれたファイルを取り込む */
+  function handlePhotoPick(input) {
+    var files = input && input.files ? Array.prototype.slice.call(input.files) : [];
+    input.value = '';
+    if (!files.length || !ui.noteForm) return;
+    captureNoteFormInputs();
+
+    var current = ui.noteForm.photos || [];
+    var room = PHOTO_MAX_PER_NOTE - current.length;
+    if (room <= 0) {
+      ui.notePhotoError = '写真は1つのメモにつき' + PHOTO_MAX_PER_NOTE + '枚までです。';
+      renderMemo();
+      return;
+    }
+    var picked = files.slice(0, room);
+    var skipped = files.length - picked.length;
+
+    ui.notePhotoBusy = true;
+    ui.notePhotoError = null;
+    renderMemo();
+
+    var errors = [];
+    var chain = Promise.resolve();
+    picked.forEach(function (file) {
+      chain = chain.then(function () {
+        return compressImageFile(file).then(function (out) {
+          if (out.bytes > PHOTO_MAX_BYTES) {
+            errors.push((file.name || '写真') + ': 圧縮後も大きすぎます(' +
+              Math.round(out.bytes / 1024) + 'KB)');
+            return;
+          }
+          var id = uid();
+          photoCache[id] = out.dataUrl;
+          ui.noteForm.photos = (ui.noteForm.photos || []).concat([{ id: id, w: out.w, h: out.h }]);
+          ui.notePhotoNew = (ui.notePhotoNew || []).concat([id]);
+        }, function (err) {
+          errors.push((file.name || '写真') + ': ' + (err && err.message ? err.message : '読み込めませんでした'));
+        });
+      });
+    });
+
+    chain.then(function () {
+      ui.notePhotoBusy = false;
+      if (skipped > 0) errors.push('写真は' + PHOTO_MAX_PER_NOTE + '枚までのため ' + skipped + '枚は追加しませんでした。');
+      ui.notePhotoError = errors.length ? errors.join(' / ') : null;
+      renderMemo();
+    });
+  }
+
+  /**
+   * メモ保存時に、新しく追加された写真の本体を保存する。
+   * 保存できなかった写真(localStorage の容量超過など)は添付を取り消す。
+   */
+  function persistNewPhotos(noteId, newIds) {
+    if (!newIds || !newIds.length) return Promise.resolve();
+    var failed = [];
+    var chain = Promise.resolve();
+    newIds.forEach(function (id) {
+      chain = chain.then(function () {
+        var data = photoCache[id];
+        if (!data) { failed.push(id); return null; }
+        return storePhoto(id, data).then(function (ok) {
+          if (!ok) failed.push(id);
+        }, function () { failed.push(id); });
+      });
+    });
+
+    return chain.then(function () {
+      if (!failed.length) return;
+      var note = findById(state.notes, noteId);
+      if (note && Array.isArray(note.photos)) {
+        note.photos = note.photos.filter(function (ph) { return failed.indexOf(ph.id) < 0; });
+        if (!note.photos.length) delete note.photos;
+        note.updatedAt = nowISO();
+        save('notes');
+      }
+      failed.forEach(function (id) { delete photoCache[id]; store.remove(photoKey(id)); });
+      toast('写真を保存できませんでした(空き容量が不足しています)');
+      renderMemo();
+    });
+  }
+
   function renderMemo() {
     renderPanel('memo',
       renderNotesSection() +
@@ -2288,8 +2739,10 @@
             '<label class="field__label" for="note-body">本文</label>' +
             '<textarea class="textarea" id="note-body" name="body" placeholder="自由に書き留めましょう" maxlength="4000">' + esc(f.body) + '</textarea>' +
           '</div>' +
+          renderNotePhotoField(f) +
           '<div class="btn-row">' +
-            '<button type="submit" class="btn btn--sm btn--primary">' + (f.id ? '更新する' : '保存する') + '</button>' +
+            '<button type="submit" class="btn btn--sm btn--primary"' + (ui.notePhotoBusy ? ' disabled' : '') + '>' +
+              (f.id ? '更新する' : '保存する') + '</button>' +
             '<button type="button" class="btn btn--sm btn--ghost" data-act="note-cancel">キャンセル</button>' +
           '</div>' +
         '</form>';
@@ -2312,7 +2765,8 @@
                   '<button type="button" class="btn btn--icon btn--ghost" data-act="cancel-delete">戻す</button>' +
                 '</div>' +
               '</div>' +
-              (n.body ? '<div class="note-card__body">' + esc(n.body) + '</div>' : '') +
+              (n.body ? '<div class="note-card__body">' + linkifyText(n.body) + '</div>' : '') +
+              photoGrid(n.photos, { alt: n.title }) +
               (n.updatedAt ? '<div class="note-card__time">更新 ' + esc(formatUpdatedAt(n.updatedAt)) + '</div>' : '') +
             '</div>';
         }).join('')
@@ -2325,6 +2779,24 @@
         '<div style="height:12px"></div>' +
         list +
       '</section>';
+  }
+
+  /** メモ編集フォームの写真エリア */
+  function renderNotePhotoField(f) {
+    var photos = Array.isArray(f.photos) ? f.photos : [];
+    var full = photos.length >= PHOTO_MAX_PER_NOTE;
+    return '' +
+      '<div class="field note-photos">' +
+        '<span class="field__label">写真(' + photos.length + '/' + PHOTO_MAX_PER_NOTE + ')</span>' +
+        photoGrid(photos, { removable: true }) +
+        '<label class="btn btn--sm btn--ghost note-photos__pick' + (full || ui.notePhotoBusy ? ' is-disabled' : '') + '">' +
+          (ui.notePhotoBusy ? '読み込み中…' : '📷 写真を追加') +
+          '<input type="file" accept="image/*" multiple data-act="photo-pick" ' +
+            (full || ui.notePhotoBusy ? 'disabled ' : '') + 'hidden>' +
+        '</label>' +
+        (ui.notePhotoError ? '<p class="note-photos__error" role="alert">⚠️ ' + esc(ui.notePhotoError) + '</p>' : '') +
+        '<p class="note-photos__hint">長辺1000pxに縮小して保存します。共有中はご家族にも表示されます。</p>' +
+      '</div>';
   }
 
   function renderSouvenirSection() {
@@ -2634,26 +3106,59 @@
 
     /* メモ */
     'note-new': function () {
-      ui.noteForm = { id: null, title: '', body: '' };
+      ui.noteForm = { id: null, title: '', body: '', photos: [] };
+      ui.notePhotoNew = [];
+      ui.notePhotoError = null;
+      ui.notePhotoBusy = false;
       renderMemo();
       focusFirstField('#note-title');
     },
     'note-edit': function (btn) {
       var n = findById(state.notes, btn.getAttribute('data-id'));
       if (!n) return;
-      ui.noteForm = { id: n.id, title: n.title, body: n.body || '' };
+      ui.noteForm = {
+        id: n.id, title: n.title, body: n.body || '',
+        photos: (Array.isArray(n.photos) ? n.photos : []).slice()
+      };
+      ui.notePhotoNew = [];
+      ui.notePhotoError = null;
+      ui.notePhotoBusy = false;
       renderMemo();
       focusFirstField('#note-title');
     },
     'note-cancel': function () {
+      // 保存せずに閉じるので、取り込んだだけの写真は捨てる
+      (ui.notePhotoNew || []).forEach(function (id) { delete photoCache[id]; });
       ui.noteForm = null;
+      ui.notePhotoNew = null;
+      ui.notePhotoError = null;
+      ui.notePhotoBusy = false;
       renderMemo();
+    },
+    'photo-remove': function (btn) {
+      var id = btn.getAttribute('data-id');
+      if (!ui.noteForm) return;
+      captureNoteFormInputs();
+      ui.noteForm.photos = (ui.noteForm.photos || []).filter(function (ph) { return ph.id !== id; });
+      ui.notePhotoNew = (ui.notePhotoNew || []).filter(function (x) { return x !== id; });
+      ui.notePhotoError = null;
+      renderMemo();
+    },
+    'photo-open': function (btn) {
+      openPhotoViewer(btn.getAttribute('data-id'));
+    },
+    'photo-close': function () {
+      closePhotoViewer();
     },
     'note-delete': function (btn) {
       var id = btn.getAttribute('data-id');
+      var gone = findById(state.notes, id);
+      var orphans = (gone && Array.isArray(gone.photos))
+        ? gone.photos.map(function (ph) { return ph.id; }) : [];
       state.notes = state.notes.filter(function (n) { return n.id !== id; });
       markDeleted('note', id);
       save('notes');
+      purgePhotos(orphans);   // 参照が無くなった写真は本体も消す
       if (ui.noteForm && ui.noteForm.id === id) ui.noteForm = null;
       renderMemo();
       toast('メモを削除しました');
@@ -2698,6 +3203,7 @@
         ui.shareJoinOpen = false;
         ui.shareErrorDetail = null;
         renderHome();
+        uploadLocalPhotos();   // 手元の写真を共有側へ移す
         toast('共有IDを作成しました');
       }, function (err) {
         ui.shareBusy = null;
@@ -2720,12 +3226,15 @@
       renderHome();
     },
     'share-leave': function () {
-      Sync.leave();
-      ui.shareError = null;
-      ui.shareErrorDetail = null;
-      ui.shareJoinOpen = false;
-      renderHome();
-      toast('共有を解除しました(データは端末に残ります)');
+      // 解除すると共有側の写真を読めなくなるので、先に端末へ退避する
+      downloadPhotosToLocal().then(function () {
+        Sync.leave();
+        ui.shareError = null;
+        ui.shareErrorDetail = null;
+        ui.shareJoinOpen = false;
+        renderHome();
+        toast('共有を解除しました(データは端末に残ります)');
+      });
     },
     'share-test': function () {
       if (ui.shareBusy) return;
@@ -2787,6 +3296,13 @@
     if (!handler) return;
     ev.preventDefault();
     handler(actEl);
+  });
+
+  document.addEventListener('change', function (ev) {
+    var input = ev.target;
+    if (input && input.getAttribute && input.getAttribute('data-act') === 'photo-pick') {
+      handlePhotoPick(input);
+    }
   });
 
   document.addEventListener('submit', function (ev) {
@@ -2893,21 +3409,44 @@
       if (!nTitle) { toast('タイトルを入力してください'); return; }
       var body = fd.get('body');
       body = body === null ? '' : String(body);
+      var formPhotos = (Array.isArray(ui.noteForm.photos) ? ui.noteForm.photos : [])
+        .filter(function (ph) { return ph && ph.id; });
+      var newIds = (ui.notePhotoNew || []).slice();
+      var savedId;
+      var dropped = [];
+
       if (ui.noteForm && ui.noteForm.id) {
         var note = findById(state.notes, ui.noteForm.id);
         if (note) {
+          var before = (Array.isArray(note.photos) ? note.photos : []).map(function (ph) { return ph.id; });
+          var keep = {};
+          formPhotos.forEach(function (ph) { keep[ph.id] = true; });
+          dropped = before.filter(function (id) { return !keep[id]; });
+
           note.title = nTitle;
           note.body = body;
+          if (formPhotos.length) note.photos = formPhotos;
+          else delete note.photos;
           note.updatedAt = nowISO();
+          savedId = note.id;
         }
         toast('メモを更新しました');
       } else {
-        state.notes.unshift({ id: uid(), title: nTitle, body: body, updatedAt: nowISO() });
+        savedId = uid();
+        var fresh = { id: savedId, title: nTitle, body: body, updatedAt: nowISO() };
+        if (formPhotos.length) fresh.photos = formPhotos;
+        state.notes.unshift(fresh);
         toast('メモを保存しました');
       }
       save('notes');
+      purgePhotos(dropped);          // 編集で外された写真の本体を消す
+
       ui.noteForm = null;
+      ui.notePhotoNew = null;
+      ui.notePhotoError = null;
+      ui.notePhotoBusy = false;
       renderMemo();
+      persistNewPhotos(savedId, newIds);
 
     } else if (kind === 'souvenir') {
       var who = val('who');
@@ -2944,6 +3483,7 @@
         ui.shareBusy = null;
         ui.shareJoinOpen = false;
         renderHome();
+        uploadLocalPhotos();   // 手元の写真を共有側へ移す
         toast('共有に参加しました');
       }, function (err) {
         ui.shareBusy = null;
