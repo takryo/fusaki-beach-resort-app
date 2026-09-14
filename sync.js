@@ -75,11 +75,15 @@ window.FusakiSync = (function () {
     };
   }
 
-  /** ビルド時定数(テストでは window.SYNC_ENDPOINTS.fbHost で差し替え) */
+  /**
+   * ビルド時定数。
+   * テスト用に window.SYNC_ENDPOINTS.fbHost があればそちらを優先する。
+   * キーが存在すれば null / 空文字でも尊重する(= 未設定状態の再現に使える)。
+   */
   function builtinFirebaseHost() {
     var override = window.SYNC_ENDPOINTS;
-    if (override && typeof override.fbHost === 'string' && override.fbHost) {
-      return normalizeHost(override.fbHost);
+    if (override && Object.prototype.hasOwnProperty.call(override, 'fbHost')) {
+      return override.fbHost ? normalizeHost(override.fbHost) : null;
     }
     return normalizeHost(DEFAULT_FIREBASE_HOST);
   }
