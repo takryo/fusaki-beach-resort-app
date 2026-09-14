@@ -36,7 +36,7 @@ window.FusakiSync = (function () {
    * 設定するとアプリは fb プロバイダのみを使い、
    * 共有カードの「上級者設定」欄は自動的に非表示になる。
    * -------------------------------------------------------------------- */
-  var DEFAULT_FIREBASE_HOST = null;
+  var DEFAULT_FIREBASE_HOST = 'https://fusaki-99945-default-rtdb.firebaseio.com';
 
   var REQUEST_TIMEOUT_MS = 12000;
   var POLL_INTERVAL_MS = 20000;   // 表示中のポーリング間隔
