@@ -57,6 +57,11 @@
     return Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
   }
 
+  /** 同期の更新時刻に使う ISO 文字列 */
+  function nowISO() {
+    return new Date().toISOString();
+  }
+
   /* --- 日付ヘルパー(すべてローカルタイム基準の YYYY-MM-DD 文字列) ----- */
 
   function pad2(n) {
@@ -247,15 +252,23 @@
     { sec: 'todo', text: 'お土産リストの最終確認' }
   ];
 
+  /**
+   * テンプレート項目の id は端末によらず同じにする。
+   * こうしないと共有に参加したときに同じ持ち物が二重に増えてしまう。
+   */
+  function templateId(index) {
+    return 'tpl-' + pad2(index);
+  }
+
   function buildChecklistTemplate() {
-    return CHECKLIST_TEMPLATE.map(function (t) {
-      return { id: uid(), sec: t.sec, text: t.text, done: false };
+    return CHECKLIST_TEMPLATE.map(function (t, i) {
+      return { id: templateId(i), sec: t.sec, text: t.text, done: false, updatedAt: nowISO() };
     });
   }
 
   function defaultTrip() {
     var start = todayISO();
-    return { start: start, end: addDaysISO(start, 3) };
+    return { start: start, end: addDaysISO(start, 3), updatedAt: nowISO() };
   }
 
   var state = {
@@ -265,6 +278,7 @@
     checklist: store.get('checklist', null),
     notes: store.get('notes', []),
     souvenirs: store.get('souvenirs', []),
+    tombstones: store.get('tombstones', {}),  // "<kind>:<id>" → 削除時刻(同期用)
     weather: { status: 'idle', data: null }   // idle | loading | ok | error
   };
 
@@ -275,6 +289,7 @@
   if (!Array.isArray(state.schedule)) state.schedule = [];
   if (!Array.isArray(state.notes)) state.notes = [];
   if (!Array.isArray(state.souvenirs)) state.souvenirs = [];
+  if (!state.tombstones || typeof state.tombstones !== 'object') state.tombstones = {};
 
   /** 描画のみに使う一時的な UI 状態(保存しない) */
   var ui = {
@@ -282,11 +297,70 @@
     scheduleForm: null,   // null | { id: string|null, date, time, title, note }
     noteForm: null,       // null | { id: string|null, title, body }
     souvenirFormOpen: false,
-    openCategories: {}    // リゾート情報アコーディオンの開閉
+    openCategories: {},   // リゾート情報アコーディオンの開閉
+    shareJoinOpen: false, // 「共有IDを入力して参加」欄の開閉
+    shareError: null,     // 共有カードのインラインエラー
+    shareBusy: null       // 実行中の共有操作 ('create' | 'join' | 'test')
   };
+
+  /** 同期からの反映中は、保存フックで同期を呼び返さないようにする */
+  var suppressSync = false;
 
   function save(key) {
     store.set(key, state[key]);
+    if (!suppressSync) Sync.notifyChange();
+  }
+
+  /* --- 同期用マイグレーション ------------------------------------------
+   * 既存データに updatedAt を付け、テンプレート項目の id を共通化する。
+   * ------------------------------------------------------------------- */
+
+  function migrateForSync() {
+    var stamp = nowISO();
+    var touched = {};
+
+    ['schedule', 'checklist', 'notes', 'souvenirs'].forEach(function (key) {
+      state[key].forEach(function (item) {
+        if (!item.id) { item.id = uid(); touched[key] = true; }
+        if (!item.updatedAt) { item.updatedAt = stamp; touched[key] = true; }
+      });
+    });
+
+    // 旧バージョンのランダムidのテンプレート項目を、共通idに寄せる
+    var byText = {};
+    CHECKLIST_TEMPLATE.forEach(function (t, i) { byText[t.sec + ':' + t.text] = templateId(i); });
+    var used = {};
+    state.checklist.forEach(function (item) { used[item.id] = true; });
+    state.checklist.forEach(function (item) {
+      if (/^tpl-\d+$/.test(item.id)) return;
+      var want = byText[item.sec + ':' + item.text];
+      if (want && !used[want]) {
+        delete used[item.id];
+        item.id = want;
+        used[want] = true;
+        touched.checklist = true;
+      }
+    });
+
+    if (!state.trip.updatedAt) { state.trip.updatedAt = stamp; touched.trip = true; }
+
+    // 古い削除マークを間引く(無制限に溜めない)
+    var ttl = (window.FusakiSync && window.FusakiSync.tombstoneTtlMs) || 5184000000;
+    var cutoff = Date.now() - ttl;
+    Object.keys(state.tombstones).forEach(function (k) {
+      var t = new Date(state.tombstones[k]).getTime();
+      if (!t || isNaN(t) || t < cutoff) { delete state.tombstones[k]; touched.tombstones = true; }
+    });
+
+    suppressSync = true;
+    Object.keys(touched).forEach(function (key) { save(key); });
+    suppressSync = false;
+  }
+
+  /** 削除を同期できるように墓標(tombstone)を残す */
+  function markDeleted(kind, id) {
+    state.tombstones[kind + ':' + id] = nowISO();
+    save('tombstones');
   }
 
   /* ======================================================================
@@ -371,6 +445,278 @@
         state.weather = { status: 'error', data: null };
         if (state.tab === 'home') renderHome();
       });
+  }
+
+  /* ======================================================================
+   * 4.5 家族と共有(sync.js との受け渡し)
+   * ==================================================================== */
+
+  /** sync.js が無い環境でもアプリが動くようにしたフォールバック */
+  var Sync = window.FusakiSync || {
+    init: function () { return { connected: false, status: 'off' }; },
+    getState: function () { return { connected: false, status: 'off' }; },
+    create: function () { return Promise.reject(new Error('同期モジュールが読み込まれていません')); },
+    join: function () { return Promise.reject(new Error('同期モジュールが読み込まれていません')); },
+    leave: function () { return { connected: false, status: 'off' }; },
+    test: function () { return Promise.resolve(false); },
+    notifyChange: function () {},
+    syncNow: function () { return Promise.resolve(false); }
+  };
+
+  /** 同期する種別 → state のキー */
+  var SYNC_KINDS = {
+    schedule: 'schedule',
+    check: 'checklist',
+    souvenir: 'souvenirs',
+    note: 'notes'
+  };
+
+  function byIdAsc(a, b) { return a.id < b.id ? -1 : (a.id > b.id ? 1 : 0); }
+  function byIdDesc(a, b) { return byIdAsc(b, a); }
+
+  /** 持ち物はテンプレート順が先、そのあと追加順(uidは時刻順) */
+  function checkOrder(a, b) {
+    var ma = /^tpl-(\d+)$/.exec(a.id);
+    var mb = /^tpl-(\d+)$/.exec(b.id);
+    if (ma && mb) return Number(ma[1]) - Number(mb[1]);
+    if (ma) return -1;
+    if (mb) return 1;
+    return byIdAsc(a, b);
+  }
+
+  /** ローカル状態を同期ドキュメント形式に変換する */
+  function buildLocalDoc() {
+    var items = {};
+
+    Object.keys(SYNC_KINDS).forEach(function (kind) {
+      var list = state[SYNC_KINDS[kind]] || [];
+      list.forEach(function (item) {
+        if (!item || !item.id) return;
+        var data = {};
+        Object.keys(item).forEach(function (k) {
+          if (k !== 'id' && k !== 'updatedAt') data[k] = item[k];
+        });
+        items[kind + ':' + item.id] = {
+          kind: kind,
+          data: data,
+          updatedAt: item.updatedAt || nowISO(),
+          deleted: false
+        };
+      });
+    });
+
+    // 削除マーク(生きているレコードより新しいときだけ削除として送る)
+    Object.keys(state.tombstones || {}).forEach(function (key) {
+      var sep = key.indexOf(':');
+      var kind = key.slice(0, sep);
+      if (!SYNC_KINDS[kind]) return;
+      var ts = state.tombstones[key];
+      var alive = items[key];
+      if (!alive || new Date(ts).getTime() >= new Date(alive.updatedAt).getTime()) {
+        items[key] = { kind: kind, data: {}, updatedAt: ts, deleted: true };
+      }
+    });
+
+    return {
+      v: 1,
+      rev: 0,
+      updatedAt: nowISO(),
+      trip: {
+        start: state.trip.start,
+        end: state.trip.end,
+        updatedAt: state.trip.updatedAt || nowISO()
+      },
+      items: items
+    };
+  }
+
+  /** マージ済みドキュメントをローカルへ反映する(常に和集合なのでデータは失われない) */
+  function applyDoc(doc) {
+    var buckets = { schedule: [], check: [], souvenir: [], note: [] };
+    var tombs = {};
+
+    Object.keys(doc.items || {}).forEach(function (key) {
+      var rec = doc.items[key];
+      if (!rec) return;
+      var sep = key.indexOf(':');
+      if (sep < 1) return;
+      var kind = key.slice(0, sep);
+      var id = key.slice(sep + 1);
+      if (!SYNC_KINDS[kind] || !id) return;
+
+      if (rec.deleted) {
+        tombs[key] = rec.updatedAt;
+        return;
+      }
+      var item = { id: id, updatedAt: rec.updatedAt };
+      Object.keys(rec.data || {}).forEach(function (k) {
+        if (k !== 'id' && k !== 'updatedAt') item[k] = rec.data[k];
+      });
+      buckets[kind].push(item);
+    });
+
+    buckets.schedule.sort(byIdAsc);
+    buckets.check.sort(checkOrder);
+    buckets.souvenir.sort(byIdAsc);
+    buckets.note.sort(byIdDesc);   // メモは新しい順
+
+    suppressSync = true;
+    try {
+      if (doc.trip && doc.trip.start) {
+        state.trip = {
+          start: doc.trip.start,
+          end: doc.trip.end || doc.trip.start,
+          updatedAt: doc.trip.updatedAt || nowISO()
+        };
+        save('trip');
+      }
+      state.schedule = buckets.schedule;
+      state.checklist = buckets.check;
+      state.souvenirs = buckets.souvenir;
+      state.notes = buckets.note;
+      state.tombstones = tombs;
+      save('schedule');
+      save('checklist');
+      save('souvenirs');
+      save('notes');
+      save('tombstones');
+    } finally {
+      suppressSync = false;
+    }
+
+    renderCurrent();
+  }
+
+  /** 状態表示だけが変わったときは、カード全体を描き直さず文字だけ差し替える */
+  function onSyncStatus(st) {
+    if (state.tab !== 'home') return;
+    var panel = $('#panel-home');
+    if (!panel) return;
+    var card = $('#share-card', panel);
+    var wasConnected = card ? card.getAttribute('data-connected') === '1' : null;
+    var statusEl = $('#share-status', panel);
+    if (card && statusEl && wasConnected === !!st.connected && !ui.shareBusy) {
+      statusEl.textContent = shareStatusText(st);
+      statusEl.className = 'share-status is-' + st.status;
+      return;
+    }
+    renderHome();
+  }
+
+  function shareStatusText(st) {
+    if (!st.connected) return '';
+    if (st.status === 'synced') {
+      return st.lastSyncedAt ? '同期済み ' + formatClock(st.lastSyncedAt) : '同期済み';
+    }
+    if (st.status === 'connecting') return '同期中…';
+    return 'オフライン(ローカル保存中)';
+  }
+
+  function formatClock(iso) {
+    var d = new Date(iso);
+    return isNaN(d.getTime()) ? '' : pad2(d.getHours()) + ':' + pad2(d.getMinutes());
+  }
+
+  function copyShareId(id) {
+    var selectFallback = function () {
+      var el = $('#share-id-value');
+      try {
+        if (el && window.getSelection && document.createRange) {
+          var range = document.createRange();
+          range.selectNodeContents(el);
+          var sel = window.getSelection();
+          sel.removeAllRanges();
+          sel.addRange(range);
+          toast('選択しました。長押しでコピーしてください');
+          return;
+        }
+      } catch (e) { /* noop */ }
+      toast('コピーできませんでした');
+    };
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(id).then(function () {
+          toast('共有IDをコピーしました');
+        }, selectFallback);
+        return;
+      }
+    } catch (e) { /* noop */ }
+    selectFallback();
+  }
+
+  var PRIVACY_NOTE =
+    '共有データは無料の公開JSON保管サービスに保存されます。' +
+    'IDを知っている人は誰でも閲覧・編集できるため、住所・本名などの個人情報は書かないでください。';
+
+  function renderShareCard() {
+    var st = Sync.getState();
+    var err = ui.shareError
+      ? '<p class="share-error" role="alert">⚠️ ' + esc(ui.shareError) + '</p>'
+      : '';
+    var note = '<p class="share-note">🔒 ' + esc(PRIVACY_NOTE) + '</p>';
+
+    if (st.connected) {
+      var busyTest = ui.shareBusy === 'test';
+      return '' +
+        '<section class="section">' +
+          '<div class="section__head"><h2 class="section__title">👨‍👩‍👧 家族と共有</h2>' +
+            '<div class="section__spacer"></div>' +
+            '<span class="share-status is-' + esc(st.status) + '" id="share-status">' + esc(shareStatusText(st)) + '</span>' +
+          '</div>' +
+          '<div class="card share-card" id="share-card" data-connected="1">' +
+            '<p class="share-card__label">共有ID</p>' +
+            '<p class="share-id" id="share-id-value">' + esc(st.shareId) + '</p>' +
+            '<div class="btn-row">' +
+              '<button type="button" class="btn btn--sm btn--primary" data-act="share-copy" data-id="' + esc(st.shareId) + '">📋 コピー</button>' +
+              '<button type="button" class="btn btn--sm btn--ghost" data-act="share-test"' + (busyTest ? ' disabled' : '') + '>' +
+                (busyTest ? '確認中…' : '🔄 接続テスト') + '</button>' +
+            '</div>' +
+            '<p class="share-help">このIDをLINEなどでご家族に送ってください。予定・持ち物・メモ・お土産リストが同じ内容で見られます。</p>' +
+            err +
+            note +
+            '<div class="share-leave">' +
+              '<div class="row-actions">' +
+                '<button type="button" class="btn btn--sm btn--ghost btn--block" data-act="ask-delete">共有を解除</button>' +
+              '</div>' +
+              '<div class="confirm-box" style="justify-content:space-between">' +
+                '<span class="confirm-text">解除しますか?(データは残ります)</span>' +
+                '<span style="display:flex;gap:6px">' +
+                  '<button type="button" class="btn btn--sm btn--danger" data-act="share-leave">解除</button>' +
+                  '<button type="button" class="btn btn--sm btn--ghost" data-act="cancel-delete">やめる</button>' +
+                '</span>' +
+              '</div>' +
+            '</div>' +
+          '</div>' +
+        '</section>';
+    }
+
+    var busyCreate = ui.shareBusy === 'create';
+    var busyJoin = ui.shareBusy === 'join';
+    var joinBlock = ui.shareJoinOpen
+      ? '<form class="share-join" data-form="share-join">' +
+          '<label class="field__label" for="share-join-id">共有ID</label>' +
+          '<div class="inline-add">' +
+            '<input class="input" type="text" id="share-join-id" name="shareId" data-keep="share-join-id" ' +
+              'placeholder="FB-jb-xxxxxxxx" autocapitalize="off" autocomplete="off" spellcheck="false">' +
+            '<button type="submit" class="btn btn--sm btn--primary"' + (busyJoin ? ' disabled' : '') + '>' +
+              (busyJoin ? '確認中…' : '参加') + '</button>' +
+          '</div>' +
+          '<button type="button" class="btn btn--sm btn--ghost" style="margin-top:8px" data-act="share-join-cancel">キャンセル</button>' +
+        '</form>'
+      : '<button type="button" class="btn btn--ghost btn--block" data-act="share-join-open">共有IDを入力して参加</button>';
+
+    return '' +
+      '<section class="section">' +
+        '<div class="section__head"><h2 class="section__title">👨‍👩‍👧 家族と共有</h2></div>' +
+        '<div class="card share-card" id="share-card" data-connected="0">' +
+          '<p class="share-help">予定・持ち物・メモ・お土産リストをご家族の端末と同じ内容にできます。</p>' +
+          '<button type="button" class="btn btn--sunset btn--block" style="margin-bottom:8px" data-act="share-create"' +
+            (busyCreate ? ' disabled' : '') + '>' + (busyCreate ? '作成中…' : '＋ 共有IDを作成') + '</button>' +
+          joinBlock +
+          err +
+          note +
+        '</div>' +
+      '</section>';
   }
 
   /* ======================================================================
@@ -651,6 +997,7 @@
         renderWeatherCard() +
       '</section>' +
       renderTodaySchedule() +
+      renderShareCard() +
       (storageAvailable ? '' :
         '<div class="data-warning"><strong>⚠️ 保存できない設定です</strong>' +
         'このブラウザでは localStorage が使えないため、入力内容はタブを閉じると失われます。</div>');
@@ -1148,6 +1495,7 @@
     'sch-delete': function (btn) {
       var id = btn.getAttribute('data-id');
       state.schedule = state.schedule.filter(function (e) { return e.id !== id; });
+      markDeleted('schedule', id);
       save('schedule');
       if (ui.scheduleForm && ui.scheduleForm.id === id) ui.scheduleForm = null;
       renderSchedule();
@@ -1170,18 +1518,25 @@
       var item = findById(state.checklist, btn.getAttribute('data-id'));
       if (!item) return;
       item.done = !item.done;
+      item.updatedAt = nowISO();
       save('checklist');
       renderChecklist();
     },
     'check-delete': function (btn) {
       var id = btn.getAttribute('data-id');
       state.checklist = state.checklist.filter(function (i) { return i.id !== id; });
+      markDeleted('check', id);
       save('checklist');
       renderChecklist();
       toast('項目を削除しました');
     },
     'checklist-reset': function () {
+      // テンプレート外の項目は削除マークを残してから作り直す
+      state.checklist.forEach(function (i) {
+        if (!/^tpl-\d+$/.test(i.id)) state.tombstones['check:' + i.id] = nowISO();
+      });
       state.checklist = buildChecklistTemplate();
+      save('tombstones');
       save('checklist');
       renderChecklist();
       toast('テンプレートに戻しました');
@@ -1207,6 +1562,7 @@
     'note-delete': function (btn) {
       var id = btn.getAttribute('data-id');
       state.notes = state.notes.filter(function (n) { return n.id !== id; });
+      markDeleted('note', id);
       save('notes');
       if (ui.noteForm && ui.noteForm.id === id) ui.noteForm = null;
       renderMemo();
@@ -1227,15 +1583,68 @@
       var s = findById(state.souvenirs, btn.getAttribute('data-id'));
       if (!s) return;
       s.done = !s.done;
+      s.updatedAt = nowISO();
       save('souvenirs');
       renderMemo();
     },
     'sv-delete': function (btn) {
       var id = btn.getAttribute('data-id');
       state.souvenirs = state.souvenirs.filter(function (s) { return s.id !== id; });
+      markDeleted('souvenir', id);
       save('souvenirs');
       renderMemo();
       toast('お土産を削除しました');
+    },
+
+    /* 家族と共有 */
+    'share-create': function () {
+      if (ui.shareBusy) return;
+      ui.shareBusy = 'create';
+      ui.shareError = null;
+      renderHome();
+      Sync.create().then(function () {
+        ui.shareBusy = null;
+        ui.shareJoinOpen = false;
+        renderHome();
+        toast('共有IDを作成しました');
+      }, function (err) {
+        ui.shareBusy = null;
+        ui.shareError = '共有IDを作成できませんでした。時間をおいて再度お試しください。';
+        renderHome();
+      });
+    },
+    'share-join-open': function () {
+      ui.shareJoinOpen = true;
+      ui.shareError = null;
+      renderHome();
+      focusFirstField('#share-join-id');
+    },
+    'share-join-cancel': function () {
+      ui.shareJoinOpen = false;
+      ui.shareError = null;
+      renderHome();
+    },
+    'share-leave': function () {
+      Sync.leave();
+      ui.shareError = null;
+      ui.shareJoinOpen = false;
+      renderHome();
+      toast('共有を解除しました(データは端末に残ります)');
+    },
+    'share-test': function () {
+      if (ui.shareBusy) return;
+      ui.shareBusy = 'test';
+      ui.shareError = null;
+      renderHome();
+      Sync.test().then(function (ok) {
+        ui.shareBusy = null;
+        renderHome();
+        toast(ok ? '接続できました' : '接続できませんでした');
+      });
+    },
+    'share-copy': function (btn) {
+      var id = btn.getAttribute('data-id') || '';
+      copyShareId(id);
     }
   };
 
@@ -1285,7 +1694,7 @@
       if (!start) { toast('開始日を入力してください'); return; }
       if (!end) end = start;
       if (diffDays(start, end) < 0) { var t = start; start = end; end = t; }
-      state.trip = { start: start, end: end };
+      state.trip = { start: start, end: end, updatedAt: nowISO() };
       save('trip');
       ui.tripEditing = false;
       renderHome();
@@ -1303,10 +1712,12 @@
           target.time = entry.time;
           target.title = entry.title;
           target.note = entry.note;
+          target.updatedAt = nowISO();
         }
         toast('予定を更新しました');
       } else {
         entry.id = uid();
+        entry.updatedAt = nowISO();
         state.schedule.push(entry);
         toast('予定を追加しました');
       }
@@ -1321,7 +1732,8 @@
         id: uid(),
         sec: form.getAttribute('data-sec') === 'todo' ? 'todo' : 'pack',
         text: text,
-        done: false
+        done: false,
+        updatedAt: nowISO()
       });
       save('checklist');
       var keep = $('[data-keep]', form);
@@ -1338,11 +1750,11 @@
         if (note) {
           note.title = nTitle;
           note.body = body;
-          note.updatedAt = Date.now();
+          note.updatedAt = nowISO();
         }
         toast('メモを更新しました');
       } else {
-        state.notes.unshift({ id: uid(), title: nTitle, body: body, updatedAt: Date.now() });
+        state.notes.unshift({ id: uid(), title: nTitle, body: body, updatedAt: nowISO() });
         toast('メモを保存しました');
       }
       save('notes');
@@ -1353,11 +1765,28 @@
       var who = val('who');
       var what = val('what');
       if (!who || !what) { toast('「誰に」と「何を」を入力してください'); return; }
-      state.souvenirs.push({ id: uid(), who: who, what: what, done: false });
+      state.souvenirs.push({ id: uid(), who: who, what: what, done: false, updatedAt: nowISO() });
       save('souvenirs');
       ui.souvenirFormOpen = false;
       renderMemo();
       toast('お土産を追加しました');
+
+    } else if (kind === 'share-join') {
+      var shareId = val('shareId');
+      if (!shareId) { ui.shareError = '共有IDを入力してください'; renderHome(); return; }
+      ui.shareBusy = 'join';
+      ui.shareError = null;
+      renderHome();
+      Sync.join(shareId).then(function () {
+        ui.shareBusy = null;
+        ui.shareJoinOpen = false;
+        renderHome();
+        toast('共有に参加しました');
+      }, function () {
+        ui.shareBusy = null;
+        ui.shareError = 'IDが違うか、サービスに接続できません。';
+        renderHome();
+      });
     }
   });
 
@@ -1366,6 +1795,13 @@
    * ==================================================================== */
 
   function init() {
+    migrateForSync();
+    Sync.init({
+      store: store,
+      buildLocalDoc: buildLocalDoc,
+      applyDoc: applyDoc,
+      onStatus: onSyncStatus
+    });
     switchTab('home');
     loadWeather();
 
