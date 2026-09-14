@@ -300,6 +300,8 @@
     openCategories: {},   // リゾート情報アコーディオンの開閉
     shareJoinOpen: false, // 「共有IDを入力して参加」欄の開閉
     shareError: null,     // 共有カードのインラインエラー
+    shareErrorDetail: null, // 失敗したプロバイダと理由(原因調査用の一行)
+    shareAdvancedOpen: false, // 「上級者設定」の開閉
     shareBusy: null       // 実行中の共有操作 ('create' | 'join' | 'test')
   };
 
@@ -651,7 +653,11 @@
   function renderShareCard() {
     var st = Sync.getState();
     var err = ui.shareError
-      ? '<p class="share-error" role="alert">⚠️ ' + esc(ui.shareError) + '</p>'
+      ? '<div class="share-error" role="alert">⚠️ ' + esc(ui.shareError) +
+          (ui.shareErrorDetail
+            ? '<span class="share-error__detail">' + esc(ui.shareErrorDetail) + '</span>'
+            : '') +
+        '</div>'
       : '';
     var note = '<p class="share-note">🔒 ' + esc(PRIVACY_NOTE) + '</p>';
 
@@ -715,8 +721,53 @@
           joinBlock +
           err +
           note +
+          renderShareAdvanced() +
         '</div>' +
       '</section>';
+  }
+
+  /**
+   * 上級者設定(Firebase Realtime Database のURL)。
+   * ビルド時定数 DEFAULT_FIREBASE_HOST が入っている場合は設定不要なので出さない。
+   */
+  function renderShareAdvanced() {
+    var cfg = Sync.getConfig ? Sync.getConfig() : null;
+    if (!cfg || !cfg.canConfigure) return '';
+
+    var current = cfg.storedHost || '';
+    var summary = current
+      ? '接続先: ' + current
+      : '未設定(既定の公開JSON保管サービスを使用)';
+
+    if (!ui.shareAdvancedOpen) {
+      return '' +
+        '<button type="button" class="share-advanced__toggle" data-act="share-advanced-open" aria-expanded="false">' +
+          '<span>⚙️ 上級者設定</span><span class="share-advanced__chev" aria-hidden="true">▼</span>' +
+        '</button>';
+    }
+
+    return '' +
+      '<div class="share-advanced">' +
+        '<button type="button" class="share-advanced__toggle" data-act="share-advanced-close" aria-expanded="true">' +
+          '<span>⚙️ 上級者設定</span><span class="share-advanced__chev is-open" aria-hidden="true">▼</span>' +
+        '</button>' +
+        // ブラウザ既定のバリデーション風船ではなく、アプリ内のエラー表示を使うため type="text"
+        '<form data-form="share-host" novalidate>' +
+          '<label class="field__label" for="share-host">データベースURL(Firebase Realtime Database)</label>' +
+          '<div class="inline-add">' +
+            '<input class="input" type="text" id="share-host" name="host" data-keep="share-host" ' +
+              'value="' + esc(current) + '" placeholder="https://xxxx-default-rtdb.firebasedatabase.app" ' +
+              'autocapitalize="off" autocomplete="off" spellcheck="false" inputmode="url">' +
+            '<button type="submit" class="btn btn--sm btn--primary">保存</button>' +
+          '</div>' +
+        '</form>' +
+        '<p class="share-advanced__state">' + esc(summary) + '</p>' +
+        (current
+          ? '<button type="button" class="btn btn--sm btn--ghost" data-act="share-host-clear">設定を削除</button>'
+          : '') +
+        '<p class="share-advanced__help">URLを設定すると、共有IDの作成・参加にこのデータベースを使います。' +
+          '参加する側はURLの設定は不要です(共有IDにURLが含まれます)。</p>' +
+      '</div>';
   }
 
   /* ======================================================================
@@ -1612,32 +1663,38 @@
       if (ui.shareBusy) return;
       ui.shareBusy = 'create';
       ui.shareError = null;
+      ui.shareErrorDetail = null;
       renderHome();
       Sync.create().then(function () {
         ui.shareBusy = null;
         ui.shareJoinOpen = false;
+        ui.shareErrorDetail = null;
         renderHome();
         toast('共有IDを作成しました');
       }, function (err) {
         ui.shareBusy = null;
         ui.shareError = '共有IDを作成できませんでした。時間をおいて再度お試しください。';
+        ui.shareErrorDetail = (err && err.message) ? err.message : null;
         renderHome();
       });
     },
     'share-join-open': function () {
       ui.shareJoinOpen = true;
       ui.shareError = null;
+      ui.shareErrorDetail = null;
       renderHome();
       focusFirstField('#share-join-id');
     },
     'share-join-cancel': function () {
       ui.shareJoinOpen = false;
       ui.shareError = null;
+      ui.shareErrorDetail = null;
       renderHome();
     },
     'share-leave': function () {
       Sync.leave();
       ui.shareError = null;
+      ui.shareErrorDetail = null;
       ui.shareJoinOpen = false;
       renderHome();
       toast('共有を解除しました(データは端末に残ります)');
@@ -1646,6 +1703,7 @@
       if (ui.shareBusy) return;
       ui.shareBusy = 'test';
       ui.shareError = null;
+      ui.shareErrorDetail = null;
       renderHome();
       Sync.test().then(function (ok) {
         ui.shareBusy = null;
@@ -1656,6 +1714,22 @@
     'share-copy': function (btn) {
       var id = btn.getAttribute('data-id') || '';
       copyShareId(id);
+    },
+    'share-advanced-open': function () {
+      ui.shareAdvancedOpen = true;
+      renderHome();
+      focusFirstField('#share-host');
+    },
+    'share-advanced-close': function () {
+      ui.shareAdvancedOpen = false;
+      renderHome();
+    },
+    'share-host-clear': function () {
+      Sync.setFirebaseHost('');
+      ui.shareError = null;
+      ui.shareErrorDetail = null;
+      renderHome();
+      toast('データベースURLの設定を削除しました');
     }
   };
 
@@ -1782,20 +1856,36 @@
       renderMemo();
       toast('お土産を追加しました');
 
+    } else if (kind === 'share-host') {
+      var host = val('host');
+      var saved = Sync.setFirebaseHost(host);
+      if (saved === false) {
+        ui.shareError = 'データベースURLの形式が正しくありません(https:// から入力してください)。';
+        ui.shareErrorDetail = null;
+        renderHome();
+        return;
+      }
+      ui.shareError = null;
+      ui.shareErrorDetail = null;
+      renderHome();
+      toast(saved ? 'データベースURLを保存しました' : '設定を削除しました');
+
     } else if (kind === 'share-join') {
       var shareId = val('shareId');
       if (!shareId) { ui.shareError = '共有IDを入力してください'; renderHome(); return; }
       ui.shareBusy = 'join';
       ui.shareError = null;
+      ui.shareErrorDetail = null;
       renderHome();
       Sync.join(shareId).then(function () {
         ui.shareBusy = null;
         ui.shareJoinOpen = false;
         renderHome();
         toast('共有に参加しました');
-      }, function () {
+      }, function (err) {
         ui.shareBusy = null;
         ui.shareError = 'IDが違うか、サービスに接続できません。';
+        ui.shareErrorDetail = (err && err.message) ? err.message : null;
         renderHome();
       });
     }
