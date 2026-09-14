@@ -1183,18 +1183,29 @@
     return chips.length ? '<div class="chip-row">' + chips.join('') + '</div>' : '';
   }
 
+  var KIDS_BADGE = {
+    ok:      { cls: 'ok',      label: '👧 5歳OK' },
+    partial: { cls: 'partial', label: '👧 条件付き' },
+    no:      { cls: 'no',      label: '👧 5歳は不可' },
+    unknown: { cls: 'unknown', label: '👧 要確認' }
+  };
+
   function renderPoi(item) {
     if (!item || typeof item !== 'object') return '';
     var meta = '';
     if (item.hours) meta += '<span>🕒 ' + esc(item.hours) + '</span>';
     if (item.location) meta += '<span>📍 ' + esc(item.location) + '</span>';
+    var kb = KIDS_BADGE[item.kids] || null;
 
     return '' +
       '<article class="poi">' +
-        '<h3 class="poi__name">' + esc(item.name || '') + '</h3>' +
+        '<h3 class="poi__name">' + esc(item.name || '') +
+          (kb ? ' <span class="kids-badge kids-badge--' + kb.cls + '">' + kb.label + '</span>' : '') +
+        '</h3>' +
         (item.description ? '<p class="poi__desc">' + esc(item.description) + '</p>' : '') +
         (meta ? '<div class="poi__meta">' + meta + '</div>' : '') +
         (item.tips ? '<p class="poi__tips">💡 ' + esc(item.tips) + '</p>' : '') +
+        (item.kidsNote ? '<p class="poi__kids">👧 ' + esc(item.kidsNote) + '</p>' : '') +
         renderLinkChips(item) +
       '</article>';
   }
