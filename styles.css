@@ -988,6 +988,223 @@ a:hover { text-decoration: underline; }
 
 .data-warning strong { display: block; font-size: 13.5px; margin-bottom: 2px; }
 
+/* --- 館内マップ ---------------------------------------------------------- */
+
+:root {
+  --map-bg:        #eef6f8;
+  --map-sea-1:     #8fd8ea;
+  --map-sea-2:     #3fa6c6;
+  --map-beach:     #f5e6c0;
+  --map-green:     #c3e4c6;
+  --map-building:  #dfe7eb;
+  --map-building-line: #bccdd5;
+  --map-pool:      #a9e2f2;
+  --map-road:      #d8e2e7;
+  --map-label:     #46626c;
+  --map-pin-fill:  #ffffff;
+  --map-pin-line:  #9fb6bf;
+  --map-pin-text:  #1d3a44;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --map-bg:        #0a2129;
+    --map-sea-1:     #17566c;
+    --map-sea-2:     #0a3644;
+    --map-beach:     #5a4e33;
+    --map-green:     #24513a;
+    --map-building:  #1e3e49;
+    --map-building-line: #2f5b69;
+    --map-pool:      #1d5f77;
+    --map-road:      #234653;
+    --map-label:     #a9c7d0;
+    --map-pin-fill:  #12303a;
+    --map-pin-line:  #3a6a7a;
+    --map-pin-text:  #e6f4f7;
+  }
+}
+
+.map-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+
+.map-viewport {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 10 / 7;
+  max-height: 62vh;
+  overflow: hidden;
+  background: var(--map-bg);
+  touch-action: none;           /* 拡大・移動を自前で扱う */
+  -webkit-tap-highlight-color: transparent;
+  cursor: grab;
+}
+
+.map-viewport:active { cursor: grabbing; }
+
+.map-stage {
+  width: 100%;
+  height: 100%;
+  transform-origin: 50% 50%;
+  will-change: transform;
+}
+
+.map-svg { display: block; width: 100%; height: 100%; }
+
+.map-bg { fill: var(--map-bg); }
+
+.map-sea-stop1 { stop-color: var(--map-sea-1); }
+.map-sea-stop2 { stop-color: var(--map-sea-2); }
+
+.map-area { stroke: none; }
+.map-area--sea      { fill: url(#map-sea-grad); }
+.map-area--beach    { fill: var(--map-beach); }
+.map-area--green    { fill: var(--map-green); }
+.map-area--pool     { fill: var(--map-pool); }
+.map-area--building { fill: var(--map-building); stroke: var(--map-building-line); stroke-width: 2; }
+
+.map-area--road,
+.map-area--path {
+  fill: var(--map-road);
+  stroke: none;
+}
+
+/* 線として渡された道は塗りではなくストロークで描く */
+polyline.map-area--road,
+polyline.map-area--path {
+  fill: none;
+  stroke: var(--map-road);
+  stroke-width: 14;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+polyline.map-area--path { stroke-width: 8; stroke-dasharray: 14 10; }
+
+.map-area__label {
+  fill: var(--map-label);
+  font-size: 28px;
+  font-weight: 700;
+  text-anchor: middle;
+  pointer-events: none;
+  opacity: .8;
+}
+
+/* --- ピン --- */
+.map-pin { cursor: pointer; }
+
+/* 実寸では小さくなるので、見た目より広いタップ範囲を用意する */
+.map-pin__hit { fill: none; pointer-events: all; }
+
+.map-pin__halo {
+  fill: var(--accent);
+  opacity: 0;
+  transition: opacity .15s ease;
+}
+
+.map-pin__dot {
+  fill: var(--map-pin-fill);
+  stroke: var(--map-pin-line);
+  stroke-width: 2;
+  transition: fill .15s ease, stroke .15s ease;
+}
+
+.map-pin__icon {
+  font-size: 26px;
+  text-anchor: middle;
+  pointer-events: none;
+}
+
+.map-pin__label {
+  fill: var(--map-pin-text);
+  font-size: 25px;
+  font-weight: 700;
+  text-anchor: middle;
+  pointer-events: none;
+  paint-order: stroke;
+  stroke: var(--map-bg);
+  stroke-width: 6px;
+  stroke-linejoin: round;
+  transition: opacity .15s ease;
+}
+
+/* 重なって読めないラベルは隠す(選択したピンは必ず出す) */
+.map-pin.is-crowded .map-pin__label { opacity: 0; }
+.map-pin.is-selected .map-pin__label { opacity: 1; }
+
+.map-pin.is-selected .map-pin__halo { opacity: .28; }
+
+/* 選択時は塗りつぶさずに輪を太くする(アイコンの絵文字が読めるように) */
+.map-pin.is-selected .map-pin__dot {
+  fill: var(--map-pin-fill);
+  stroke: var(--accent);
+  stroke-width: 6;
+}
+
+.map-pin.is-selected .map-pin__label { fill: var(--accent); }
+
+.map-pin:focus { outline: none; }
+.map-pin:focus-visible .map-pin__halo { opacity: .4; }
+
+/* --- ズームUI --- */
+.map-zoom { display: flex; gap: 4px; }
+
+.map-zoom .btn--icon {
+  min-width: 40px;
+  min-height: 40px;
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+/* --- 選択したピンの詳細 --- */
+.map-detail {
+  position: relative;
+  margin-top: 10px;
+  padding: 4px 12px 8px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-sm);
+  animation: fade-in .18s ease both;
+}
+
+.map-detail .poi { border-bottom: none; padding-bottom: 4px; }
+.map-detail .poi__name { padding-right: 34px; }
+
+.map-detail__close {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: 50%;
+  background: var(--surface-sunk);
+  color: var(--text-mute);
+  font-size: 13px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.map-hint {
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--text-mute);
+  margin-top: 8px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .map-detail { animation: none; }
+}
+
 /* --- リゾート情報 ⇄ 予定 の連携 ------------------------------------------ */
 
 /* chip をボタンとしても使えるように */

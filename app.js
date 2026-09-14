@@ -298,7 +298,8 @@
     noteForm: null,       // null | { id: string|null, title, body }
     souvenirFormOpen: false,
     openCategories: {},   // リゾート情報アコーディオンの開閉
-    poiForm: null,        // null | { cat, name } … 施設カード内の「予定に追加」フォーム
+    poiForm: null,        // null | { cat, name, from } … 施設カード内の「予定に追加」フォーム
+    mapPin: null,         // 館内マップで選択中のピン番号
     openPoi: {},          // 予定id → 施設情報を展開中か
     shareJoinOpen: false, // 「共有IDを入力して参加」欄の開閉
     shareError: null,     // 共有カードのインラインエラー
@@ -1175,7 +1176,7 @@
       return;
     }
 
-    var html = renderHotelCard(data.hotel);
+    var html = renderHotelCard(data.hotel) + renderMapSection();
 
     var categories = Array.isArray(data.categories) ? data.categories : [];
     if (!categories.length) {
@@ -1207,6 +1208,7 @@
     }
 
     renderPanel('resort', html);
+    applyMapView();
   }
 
   function renderHotelCard(hotel) {
@@ -1262,8 +1264,11 @@
    * @param mode   'resort' … リゾート情報タブ(「予定に追加」ボタンあり)
    *               'ref'    … 予定から参照して展開したとき(ボタンなし)
    */
-  function renderPoi(item, catId, mode) {
+  function renderPoi(item, catId, mode, opts) {
     if (!item || typeof item !== 'object') return '';
+    opts = opts || {};
+    var origin = opts.origin || 'list';        // 'list'(アコーディオン) | 'map'(館内マップ)
+    var idPrefix = opts.idPrefix || 'poi';     // 同じ施設が2箇所に出てもidが衝突しないように
     var meta = '';
     if (item.hours) meta += '<span>🕒 ' + esc(item.hours) + '</span>';
     if (item.location) meta += '<span>📍 ' + esc(item.location) + '</span>';
@@ -1272,11 +1277,13 @@
     var chips = linkChips(item);
     var formOpen = false;
     if (mode !== 'ref') {
-      formOpen = !!(ui.poiForm && ui.poiForm.cat === catId && ui.poiForm.name === item.name);
+      formOpen = !!(ui.poiForm && ui.poiForm.cat === catId &&
+                    ui.poiForm.name === item.name && ui.poiForm.from === origin);
       if (!formOpen) {
         chips.unshift(
           '<button type="button" class="chip chip--btn chip--add" data-act="poi-add-open" ' +
-            'data-cat="' + esc(catId || '') + '" data-name="' + esc(item.name || '') + '">📅 予定に追加</button>'
+            'data-cat="' + esc(catId || '') + '" data-name="' + esc(item.name || '') + '" ' +
+            'data-from="' + esc(origin) + '">📅 予定に追加</button>'
         );
       }
     }
@@ -1291,12 +1298,16 @@
         (item.tips ? '<p class="poi__tips">💡 ' + esc(item.tips) + '</p>' : '') +
         (item.kidsNote ? '<p class="poi__kids">👧 ' + esc(item.kidsNote) + '</p>' : '') +
         (chips.length ? '<div class="chip-row">' + chips.join('') + '</div>' : '') +
-        (formOpen ? renderPoiAddForm(item, catId) : '') +
+        (formOpen ? renderPoiAddForm(item, catId, idPrefix) : '') +
       '</article>';
   }
 
   /** 施設カード内に開く「予定に追加」フォーム */
-  function renderPoiAddForm(item, catId) {
+  function renderPoiAddForm(item, catId, idPrefix) {
+    idPrefix = idPrefix || 'poi';
+    var dateId = idPrefix + '-date';
+    var timeId = idPrefix + '-time';
+    var noteId = idPrefix + '-note';
     var trip = state.trip || {};
     var range = '';
     if (trip.start) range += ' min="' + esc(trip.start) + '"';
@@ -1310,17 +1321,17 @@
         '<div class="form__title">📅 「' + esc(item.name || '') + '」を予定に追加</div>' +
         '<div class="field-row">' +
           '<div class="field">' +
-            '<label class="field__label" for="poi-date">日付</label>' +
-            '<input class="input" type="date" id="poi-date" name="date" value="' + esc(defaultPoiDate()) + '"' + range + '>' +
+            '<label class="field__label" for="' + dateId + '">日付</label>' +
+            '<input class="input" type="date" id="' + dateId + '" name="date" value="' + esc(defaultPoiDate()) + '"' + range + '>' +
           '</div>' +
           '<div class="field field--narrow">' +
-            '<label class="field__label" for="poi-time">時刻(任意)</label>' +
-            '<input class="input" type="time" id="poi-time" name="time">' +
+            '<label class="field__label" for="' + timeId + '">時刻(任意)</label>' +
+            '<input class="input" type="time" id="' + timeId + '" name="time">' +
           '</div>' +
         '</div>' +
         '<div class="field">' +
-          '<label class="field__label" for="poi-note">メモ(任意)</label>' +
-          '<textarea class="textarea textarea--sm" id="poi-note" name="note" placeholder="予約番号・待ち合わせ場所など" maxlength="500"></textarea>' +
+          '<label class="field__label" for="' + noteId + '">メモ(任意)</label>' +
+          '<textarea class="textarea textarea--sm" id="' + noteId + '" name="note" placeholder="予約番号・待ち合わせ場所など" maxlength="500"></textarea>' +
         '</div>' +
         '<div class="btn-row">' +
           '<button type="submit" class="btn btn--sm btn--primary">追加する</button>' +
@@ -1380,6 +1391,359 @@
     var found = findPoi(e.poi);
     if (!found) return '';
     return '<div class="poi-ref">' + renderPoi(found.item, found.catId, 'ref') + '</div>';
+  }
+
+
+  /* --- 5-3b. 館内マップ(インタラクティブSVG) ---------------------------- */
+
+  var MAP_VIEWBOX = { w: 1000, h: 700 };
+  var MAP_MIN_SCALE = 1;
+  var MAP_MAX_SCALE = 4;
+  var MAP_ZOOM_STEP = 1.5;
+
+  /** 面の種類(未知の kind は green として描く) */
+  var MAP_KINDS = {
+    sea: 1, beach: 1, green: 1, building: 1, pool: 1, road: 1, path: 1
+  };
+
+  /** 現在の拡大・移動量。再描画をまたいで保持する */
+  var mapView = { scale: 1, tx: 0, ty: 0 };
+  var mapGesture = {
+    dragging: false, moved: false,
+    startX: 0, startY: 0, baseTx: 0, baseTy: 0,
+    pinchDist: 0, baseScale: 1, lastTap: 0
+  };
+
+  /** window.RESORT_MAP が使える形なら返す。そうでなければ null */
+  function mapData() {
+    try {
+      var m = window.RESORT_MAP;
+      if (!m || typeof m !== 'object') return null;
+      if (!Array.isArray(m.areas) && !Array.isArray(m.pins)) return null;
+      return m;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  /** 数値として妥当なものだけ通す(不正なデータでSVGが壊れないように) */
+  function num(value, fallback) {
+    var n = Number(value);
+    return isFinite(n) ? n : (fallback || 0);
+  }
+
+  /** SVG の points 属性に使える文字だけ残す */
+  function safePoints(value) {
+    if (!value) return '';
+    return String(value).replace(/[^0-9eE.,\-+\s]/g, '').trim();
+  }
+
+  function renderMapSection() {
+    var m = mapData();
+    if (!m) return '';   // データが無ければセクションごと出さない
+
+    var areas = Array.isArray(m.areas) ? m.areas : [];
+    var pins = Array.isArray(m.pins) ? m.pins : [];
+    var official = safeUrl(m.officialMapUrl);
+    var crowded = crowdedLabels(pins, areas);
+
+    var svg = '' +
+      '<svg class="map-svg" viewBox="0 0 ' + MAP_VIEWBOX.w + ' ' + MAP_VIEWBOX.h + '" ' +
+          'preserveAspectRatio="xMidYMid meet" role="img" aria-label="館内マップ">' +
+        '<defs>' +
+          '<linearGradient id="map-sea-grad" x1="0" y1="0" x2="0" y2="1">' +
+            '<stop offset="0%" class="map-sea-stop1"/>' +
+            '<stop offset="100%" class="map-sea-stop2"/>' +
+          '</linearGradient>' +
+        '</defs>' +
+        '<rect class="map-bg" x="0" y="0" width="' + MAP_VIEWBOX.w + '" height="' + MAP_VIEWBOX.h + '"/>' +
+        areas.map(renderMapArea).join('') +
+        pins.map(function (pin, i) { return renderMapPin(pin, i, crowded[i]); }).join('') +
+      '</svg>';
+
+    return '' +
+      '<section class="section map-section">' +
+        '<div class="section__head">' +
+          '<h2 class="section__title">🗺 館内マップ</h2>' +
+          '<div class="section__spacer"></div>' +
+          '<div class="map-zoom">' +
+            '<button type="button" class="btn btn--icon btn--ghost" data-act="map-zoom" data-dir="out" aria-label="縮小">−</button>' +
+            '<button type="button" class="btn btn--icon btn--ghost" data-act="map-zoom" data-dir="in" aria-label="拡大">＋</button>' +
+            '<button type="button" class="btn btn--icon btn--ghost" id="map-reset" data-act="map-zoom" data-dir="reset" aria-label="表示をリセット">⟲</button>' +
+          '</div>' +
+        '</div>' +
+        '<div class="map-card">' +
+          '<div class="map-viewport" id="map-viewport">' +
+            '<div class="map-stage" id="map-stage" style="transform:' + mapTransform() + '">' + svg + '</div>' +
+          '</div>' +
+        '</div>' +
+        renderMapDetail(m) +
+        '<p class="map-hint">ピンをタップすると詳細が出ます。' +
+          '2本指で拡大・1本指で移動、ダブルタップで元に戻ります。</p>' +
+        (official
+          ? '<div class="chip-row"><a class="chip" href="' + esc(official) + '" target="_blank" rel="noopener noreferrer">🔗 公式マップを開く</a></div>'
+          : '') +
+      '</section>';
+  }
+
+  /** 背景の面。road / path は薄い線(polyline)として描く */
+  function renderMapArea(a) {
+    if (!a || typeof a !== 'object') return '';
+    var kind = String(a.kind || 'green');
+    if (!MAP_KINDS[kind]) kind = 'green';
+    var cls = 'map-area map-area--' + kind;
+    var isLine = (kind === 'road' || kind === 'path');
+    var pts = safePoints(a.points);
+    var shape = '';
+
+    if (isLine && pts) {
+      shape = '<polyline class="' + cls + '" points="' + esc(pts) + '"/>';
+    } else if (pts) {
+      shape = '<polygon class="' + cls + '" points="' + esc(pts) + '"/>';
+    } else if (a.rect && typeof a.rect === 'object') {
+      var r = a.rect;
+      shape = '<rect class="' + cls + '" x="' + num(r.x) + '" y="' + num(r.y) +
+        '" width="' + num(r.w) + '" height="' + num(r.h) + '" rx="' + num(r.r, 6) + '"/>';
+    }
+    if (!shape) return '';
+
+    var label = '';
+    if (a.label && a.labelPos) {
+      label = '<text class="map-area__label" x="' + num(a.labelPos.x) + '" y="' + num(a.labelPos.y) +
+        '">' + esc(a.label) + '</text>';
+    }
+    return shape + label;
+  }
+
+  var MAP_LABEL_FONT = 25;   // styles.css の .map-pin__label と揃える
+  var MAP_AREA_FONT = 28;    // styles.css の .map-area__label と揃える
+
+  /** ラベルのおおよその半幅(座標単位)。全角は1em、半角は約0.58emで見積もる */
+  function labelHalfWidth(text, fontSize) {
+    var w = 0;
+    for (var i = 0; i < text.length; i++) {
+      var c = text.charCodeAt(i);
+      var wide = (c >= 0x3000 && c <= 0x9fff) || (c >= 0xff00 && c <= 0xffef);
+      w += wide ? 1 : 0.58;
+    }
+    return w * fontSize / 2;
+  }
+
+  /**
+   * 重なって読めなくなるピン名を間引く。
+   * 面ラベル(ノースウイング等)を先に置き、そこへ重なるピン名は隠す。
+   * 隠れたピンも、タップして選択すれば名前が出る。
+   */
+  function crowdedLabels(pins, areas) {
+    var placed = [];
+    var hidden = {};
+
+    areas.forEach(function (a) {
+      if (!a || !a.label || !a.labelPos) return;
+      placed.push({
+        x: num(a.labelPos.x),
+        y: num(a.labelPos.y),
+        half: labelHalfWidth(String(a.label), MAP_AREA_FONT)
+      });
+    });
+
+    pins.forEach(function (pin, i) {
+      var text = pin ? String(pin.short || pin.name || '') : '';
+      if (!text) { hidden[i] = true; return; }
+      var half = labelHalfWidth(text, MAP_LABEL_FONT);
+      var x = num(pin.x);
+      var y = num(pin.y) + 52;
+      var clash = placed.some(function (p) {
+        return Math.abs(p.y - y) < 30 && Math.abs(p.x - x) < (p.half + half + 6);
+      });
+      if (clash) hidden[i] = true;
+      else placed.push({ x: x, y: y, half: half });
+    });
+    return hidden;
+  }
+
+  function renderMapPin(pin, index, crowded) {
+    if (!pin || typeof pin !== 'object') return '';
+    var selected = ui.mapPin === index;
+    var label = pin.short || pin.name || '';
+    return '' +
+      '<g class="map-pin' + (selected ? ' is-selected' : '') +
+          (crowded ? ' is-crowded' : '') + '" data-act="map-pin" data-idx="' + index + '" ' +
+          'transform="translate(' + num(pin.x) + ',' + num(pin.y) + ')" ' +
+          'role="button" tabindex="0" aria-pressed="' + (selected ? 'true' : 'false') + '" ' +
+          'aria-label="' + esc(pin.name || label) + '">' +
+        // viewBox(1000x700)を幅360px前後で表示するため、ピンは大きめの座標値で描く
+        '<circle class="map-pin__hit" r="34"/>' +
+        '<circle class="map-pin__halo" r="30"/>' +
+        '<circle class="map-pin__dot" r="22"/>' +
+        '<text class="map-pin__icon" y="9">' + esc(pin.icon || '📍') + '</text>' +
+        '<text class="map-pin__label" y="52">' + esc(label) + '</text>' +
+      '</g>';
+  }
+
+  /** 選択中のピンの詳細。resort-data に対応があれば施設カードを再利用する */
+  function renderMapDetail(m) {
+    var index = ui.mapPin;
+    if (index === null || index === undefined) return '';
+    var pins = Array.isArray(m.pins) ? m.pins : [];
+    var pin = pins[index];
+    if (!pin) return '';
+
+    var found = pin.cat ? findPoi({ cat: pin.cat, name: pin.name }) : null;
+    var inner;
+    if (found) {
+      // 「予定に追加」も使えるように list と同じモードで描く(idは分ける)
+      inner = renderPoi(found.item, found.catId, 'resort', { origin: 'map', idPrefix: 'mappoi' });
+    } else {
+      inner = '' +
+        '<article class="poi">' +
+          '<h3 class="poi__name">' + esc(pin.icon || '📍') + ' ' + esc(pin.name || '') + '</h3>' +
+          (pin.cat
+            ? '<p class="poi__desc muted">この施設の詳細情報は準備中です。</p>'
+            : '<p class="poi__desc muted">館内の目印です。</p>') +
+        '</article>';
+    }
+
+    return '' +
+      '<div class="map-detail" id="map-detail">' +
+        '<button type="button" class="map-detail__close" data-act="map-close" aria-label="閉じる">✕</button>' +
+        inner +
+      '</div>';
+  }
+
+  /* --- マップの拡大・移動 ---------------------------------------------- */
+
+  function mapTransform() {
+    return 'translate(' + mapView.tx.toFixed(1) + 'px,' + mapView.ty.toFixed(1) + 'px) scale(' + mapView.scale.toFixed(3) + ')';
+  }
+
+  /** 拡大しても地図が枠から離れすぎないように移動量を制限する */
+  function clampMapView() {
+    var vp = $('#map-viewport');
+    if (!vp) return;
+    var maxX = vp.clientWidth * (mapView.scale - 1) / 2;
+    var maxY = vp.clientHeight * (mapView.scale - 1) / 2;
+    mapView.tx = Math.max(-maxX, Math.min(maxX, mapView.tx));
+    mapView.ty = Math.max(-maxY, Math.min(maxY, mapView.ty));
+  }
+
+  function applyMapView() {
+    clampMapView();
+    var stage = $('#map-stage');
+    if (stage) stage.style.transform = mapTransform();
+    var reset = $('#map-reset');
+    if (reset) reset.disabled = (mapView.scale === 1 && mapView.tx === 0 && mapView.ty === 0);
+  }
+
+  function setMapScale(next, recenter) {
+    mapView.scale = Math.max(MAP_MIN_SCALE, Math.min(MAP_MAX_SCALE, next));
+    if (recenter || mapView.scale === MAP_MIN_SCALE) {
+      mapView.tx = 0;
+      mapView.ty = 0;
+    }
+    applyMapView();
+  }
+
+  /** 拡大中に選んだピンが画面外に行かないよう中央へ寄せる */
+  function centerMapOn(pin) {
+    var vp = $('#map-viewport');
+    if (!vp || !pin || mapView.scale <= MAP_MIN_SCALE) { applyMapView(); return; }
+    var w = vp.clientWidth;
+    var h = vp.clientHeight;
+    var px = num(pin.x) / MAP_VIEWBOX.w * w;
+    var py = num(pin.y) / MAP_VIEWBOX.h * h;
+    mapView.tx = -(px - w / 2) * mapView.scale;
+    mapView.ty = -(py - h / 2) * mapView.scale;
+    applyMapView();
+  }
+
+  function resetMapView() {
+    mapView.scale = 1;
+    mapView.tx = 0;
+    mapView.ty = 0;
+    applyMapView();
+  }
+
+  function touchDistance(touches) {
+    var dx = touches[0].clientX - touches[1].clientX;
+    var dy = touches[0].clientY - touches[1].clientY;
+    return Math.sqrt(dx * dx + dy * dy);
+  }
+
+  function startMapDrag(x, y) {
+    mapGesture.dragging = true;
+    mapGesture.moved = false;
+    mapGesture.startX = x;
+    mapGesture.startY = y;
+    mapGesture.baseTx = mapView.tx;
+    mapGesture.baseTy = mapView.ty;
+  }
+
+  function moveMapDrag(x, y) {
+    if (!mapGesture.dragging) return;
+    var dx = x - mapGesture.startX;
+    var dy = y - mapGesture.startY;
+    if (Math.abs(dx) + Math.abs(dy) > 6) mapGesture.moved = true;
+    if (mapView.scale <= MAP_MIN_SCALE) return;   // 等倍のときは動かさない
+    mapView.tx = mapGesture.baseTx + dx;
+    mapView.ty = mapGesture.baseTy + dy;
+    applyMapView();
+  }
+
+  function inMapViewport(target) {
+    return !!(target && target.closest && target.closest('.map-viewport'));
+  }
+
+  /**
+   * タッチ/マウスのジェスチャー。
+   * .map-viewport には touch-action:none を当ててあるので preventDefault は不要
+   * (パッシブリスナーのままブラウザのスクロールと競合しない)。
+   */
+  function bindMapGestures() {
+    document.addEventListener('touchstart', function (ev) {
+      if (!inMapViewport(ev.target)) return;
+      if (ev.touches.length === 2) {
+        mapGesture.dragging = false;
+        mapGesture.pinchDist = touchDistance(ev.touches);
+        mapGesture.baseScale = mapView.scale;
+      } else if (ev.touches.length === 1) {
+        startMapDrag(ev.touches[0].clientX, ev.touches[0].clientY);
+        var now = Date.now();
+        if (now - mapGesture.lastTap < 320) {   // ダブルタップでリセット
+          resetMapView();
+          mapGesture.moved = true;              // 直後のピン選択は抑制する
+          mapGesture.lastTap = 0;
+        } else {
+          mapGesture.lastTap = now;
+        }
+      }
+    }, { passive: true });
+
+    document.addEventListener('touchmove', function (ev) {
+      if (!$('#map-stage')) return;
+      if (ev.touches.length === 2 && mapGesture.pinchDist > 0) {
+        setMapScale(mapGesture.baseScale * (touchDistance(ev.touches) / mapGesture.pinchDist));
+        mapGesture.moved = true;
+      } else if (ev.touches.length === 1) {
+        moveMapDrag(ev.touches[0].clientX, ev.touches[0].clientY);
+      }
+    }, { passive: true });
+
+    document.addEventListener('touchend', function () {
+      mapGesture.dragging = false;
+      mapGesture.pinchDist = 0;
+    });
+
+    document.addEventListener('mousedown', function (ev) {
+      if (!inMapViewport(ev.target)) return;
+      startMapDrag(ev.clientX, ev.clientY);
+    });
+    document.addEventListener('mousemove', function (ev) {
+      if (mapGesture.dragging) moveMapDrag(ev.clientX, ev.clientY);
+    });
+    document.addEventListener('mouseup', function () {
+      mapGesture.dragging = false;
+    });
   }
 
   /* --- 5-4. チェックリスト ---------------------------------------------- */
@@ -1689,10 +2053,11 @@
     'poi-add-open': function (btn) {
       ui.poiForm = {
         cat: btn.getAttribute('data-cat') || '',
-        name: btn.getAttribute('data-name') || ''
+        name: btn.getAttribute('data-name') || '',
+        from: btn.getAttribute('data-from') || 'list'
       };
       renderResort();
-      focusFirstField('#poi-date');
+      focusFirstField(ui.poiForm.from === 'map' ? '#mappoi-date' : '#poi-date');
     },
     'poi-add-cancel': function () {
       ui.poiForm = null;
@@ -1704,6 +2069,32 @@
       if (ui.openPoi[id]) delete ui.openPoi[id];
       else ui.openPoi[id] = true;
       renderCurrent();
+    },
+
+    /* 館内マップ */
+    'map-pin': function (g) {
+      if (mapGesture.moved) { mapGesture.moved = false; return; }   // ドラッグ直後は選択しない
+      var index = Number(g.getAttribute('data-idx'));
+      if (!isFinite(index)) return;
+      ui.mapPin = (ui.mapPin === index) ? null : index;
+      renderResort();
+      if (ui.mapPin !== null) {
+        var m = mapData();
+        var pins = (m && Array.isArray(m.pins)) ? m.pins : [];
+        centerMapOn(pins[ui.mapPin]);
+      }
+      var detail = $('#map-detail');
+      if (detail && detail.scrollIntoView) detail.scrollIntoView({ block: 'nearest' });
+    },
+    'map-close': function () {
+      ui.mapPin = null;
+      renderResort();
+    },
+    'map-zoom': function (btn) {
+      var dir = btn.getAttribute('data-dir');
+      if (dir === 'in') setMapScale(mapView.scale * MAP_ZOOM_STEP);
+      else if (dir === 'out') setMapScale(mapView.scale / MAP_ZOOM_STEP);
+      else resetMapView();
     },
 
     /* リゾート情報 */
@@ -2056,6 +2447,7 @@
    * ==================================================================== */
 
   function init() {
+    bindMapGestures();
     migrateForSync();
     Sync.init({
       store: store,
