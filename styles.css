@@ -1659,3 +1659,55 @@ polyline.map-area--path {
 .map-route-bar__text strong { font-size: 15px; }
 
 .poi__route-hint { margin-top: 7px; }
+
+/* --- ホームの予約ボタン ---------------------------------------------------- */
+.resv {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.resv__btn {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+  padding: 13px 15px;
+  color: var(--text);
+  text-decoration: none;
+  min-height: 56px;
+}
+
+.resv__btn:hover { text-decoration: none; }
+.resv__btn:active { transform: scale(.985); }
+
+.resv__icon {
+  font-size: 24px;
+  line-height: 1;
+  flex: none;
+}
+
+.resv__text {
+  flex: 1;
+  min-width: 0;
+  font-weight: 700;
+  font-size: 14.5px;
+  line-height: 1.35;
+}
+
+.resv__note {
+  display: block;
+  font-weight: 400;
+  font-size: 12px;
+  color: var(--text-mute);
+  margin-top: 2px;
+}
+
+.resv__arrow {
+  color: var(--text-mute);
+  font-size: 22px;
+  flex: none;
+}
