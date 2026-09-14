@@ -300,6 +300,7 @@
     openCategories: {},   // リゾート情報アコーディオンの開閉
     poiForm: null,        // null | { cat, name, from } … 施設カード内の「予定に追加」フォーム
     mapPin: null,         // 館内マップで選択中のピン番号
+    mapFilter: 'all',     // 館内マップのカテゴリフィルタ
     openPoi: {},          // 予定id → 施設情報を展開中か
     shareJoinOpen: false, // 「共有IDを入力して参加」欄の開閉
     shareError: null,     // 共有カードのインラインエラー
@@ -1394,17 +1395,38 @@
   }
 
 
-  /* --- 5-3b. 館内マップ(インタラクティブSVG) ---------------------------- */
+  /* --- 5-3b. 館内マップ(インタラクティブSVG) ----------------------------
+   *
+   * 設計メモ:
+   *  ・ピンは <g transform="translate(x,y)"> の中にもう一段 <g> を置き、
+   *    そこへ scale(1/ズーム倍率) を掛けている。こうするとズームしても
+   *    ピンの見た目の大きさは一定のまま、施設どうしの間隔だけが広がる。
+   *  ・ラベルはズームのたびに衝突判定をやり直し、CSS の opacity で
+   *    出し入れする(再描画しないのでちらつかない)。
+   * ------------------------------------------------------------------- */
 
   var MAP_VIEWBOX = { w: 1000, h: 700 };
   var MAP_MIN_SCALE = 1;
   var MAP_MAX_SCALE = 4;
   var MAP_ZOOM_STEP = 1.5;
 
-  /** 面の種類(未知の kind は green として描く) */
+  var MAP_PIN_FONT = 23;    // styles.css の .map-pin__label と揃える
+  var MAP_AREA_FONT = 24;   // styles.css の .map-area__label と揃える
+
+  /** 面の種類(未知の kind は green2 として描く) */
   var MAP_KINDS = {
-    sea: 1, beach: 1, green: 1, building: 1, pool: 1, road: 1, path: 1
+    sea: 1, beach: 1, green: 1, green2: 1,
+    building: 1, pool: 1, road: 1, path: 1, pier: 1, parking: 1
   };
+
+  /** マップ上部のカテゴリフィルタ */
+  var MAP_FILTERS = [
+    { key: 'all', label: 'すべて', icon: '🗺' },
+    { key: 'food', label: '食事', icon: '🍽', cats: ['dining'] },
+    { key: 'pool', label: 'プール', icon: '🏊', cats: ['pool_beach'] },
+    { key: 'play', label: '遊び', icon: '🎨', cats: ['activities', 'facilities'] },
+    { key: 'other', label: 'その他', icon: '🚗', cats: ['access', null] }
+  ];
 
   /** 現在の拡大・移動量。再描画をまたいで保持する */
   var mapView = { scale: 1, tx: 0, ty: 0 };
@@ -1438,6 +1460,31 @@
     return String(value).replace(/[^0-9eE.,\-+\s]/g, '').trim();
   }
 
+  /** SVG の d 属性に使える文字だけ残す。moveto で始まらないものは捨てる */
+  function safePathData(value) {
+    if (!value) return '';
+    var d = String(value).replace(/[^MmLlHhVvCcSsQqTtAaZz0-9eE.,\-+\s]/g, '').trim();
+    return /^[Mm][\s0-9.\-+]/.test(d) ? d : '';
+  }
+
+  function filterOf(key) {
+    for (var i = 0; i < MAP_FILTERS.length; i++) {
+      if (MAP_FILTERS[i].key === key) return MAP_FILTERS[i];
+    }
+    return MAP_FILTERS[0];
+  }
+
+  /** ピンが現在のフィルタに含まれるか */
+  function pinInFilter(pin, key) {
+    if (!key || key === 'all') return true;
+    var f = filterOf(key);
+    if (!f.cats) return true;
+    var cat = (pin && pin.cat) ? pin.cat : null;
+    return f.cats.indexOf(cat) >= 0;
+  }
+
+  /* --- 描画 ------------------------------------------------------------ */
+
   function renderMapSection() {
     var m = mapData();
     if (!m) return '';   // データが無ければセクションごと出さない
@@ -1445,20 +1492,19 @@
     var areas = Array.isArray(m.areas) ? m.areas : [];
     var pins = Array.isArray(m.pins) ? m.pins : [];
     var official = safeUrl(m.officialMapUrl);
-    var crowded = crowdedLabels(pins, areas);
 
     var svg = '' +
       '<svg class="map-svg" viewBox="0 0 ' + MAP_VIEWBOX.w + ' ' + MAP_VIEWBOX.h + '" ' +
           'preserveAspectRatio="xMidYMid meet" role="img" aria-label="館内マップ">' +
         '<defs>' +
-          '<linearGradient id="map-sea-grad" x1="0" y1="0" x2="0" y2="1">' +
+          '<linearGradient id="map-sea-grad" x1="0" y1="0" x2="1" y2="1">' +
             '<stop offset="0%" class="map-sea-stop1"/>' +
             '<stop offset="100%" class="map-sea-stop2"/>' +
           '</linearGradient>' +
         '</defs>' +
         '<rect class="map-bg" x="0" y="0" width="' + MAP_VIEWBOX.w + '" height="' + MAP_VIEWBOX.h + '"/>' +
-        areas.map(renderMapArea).join('') +
-        pins.map(function (pin, i) { return renderMapPin(pin, i, crowded[i]); }).join('') +
+        '<g class="map-areas">' + areas.map(renderMapArea).join('') + '</g>' +
+        '<g class="map-pins">' + pins.map(renderMapPin).join('') + '</g>' +
       '</svg>';
 
     return '' +
@@ -1472,13 +1518,14 @@
             '<button type="button" class="btn btn--icon btn--ghost" id="map-reset" data-act="map-zoom" data-dir="reset" aria-label="表示をリセット">⟲</button>' +
           '</div>' +
         '</div>' +
+        renderMapFilters() +
         '<div class="map-card">' +
           '<div class="map-viewport" id="map-viewport">' +
             '<div class="map-stage" id="map-stage" style="transform:' + mapTransform() + '">' + svg + '</div>' +
           '</div>' +
         '</div>' +
         renderMapDetail(m) +
-        '<p class="map-hint">ピンをタップすると詳細が出ます。' +
+        '<p class="map-hint">ピンをタップすると詳細が出ます。拡大すると施設名が増えます。' +
           '2本指で拡大・1本指で移動、ダブルタップで元に戻ります。</p>' +
         (official
           ? '<div class="chip-row"><a class="chip" href="' + esc(official) + '" target="_blank" rel="noopener noreferrer">🔗 公式マップを開く</a></div>'
@@ -1486,17 +1533,31 @@
       '</section>';
   }
 
-  /** 背景の面。road / path は薄い線(polyline)として描く */
+  function renderMapFilters() {
+    return '<div class="map-filters" role="group" aria-label="表示するカテゴリ">' +
+      MAP_FILTERS.map(function (f) {
+        var active = (ui.mapFilter || 'all') === f.key;
+        return '<button type="button" class="map-filter' + (active ? ' is-active' : '') + '" ' +
+          'data-act="map-filter" data-key="' + esc(f.key) + '" aria-pressed="' + (active ? 'true' : 'false') + '">' +
+          '<span class="map-filter__icon" aria-hidden="true">' + esc(f.icon) + '</span>' + esc(f.label) +
+        '</button>';
+      }).join('') + '</div>';
+  }
+
+  /** 背景の面。rect / polygon / path(d)に対応 */
   function renderMapArea(a) {
     if (!a || typeof a !== 'object') return '';
-    var kind = String(a.kind || 'green');
-    if (!MAP_KINDS[kind]) kind = 'green';
+    var kind = String(a.kind || 'green2');
+    if (!MAP_KINDS[kind]) kind = 'green2';
     var cls = 'map-area map-area--' + kind;
     var isLine = (kind === 'road' || kind === 'path');
     var pts = safePoints(a.points);
+    var d = safePathData(a.d);
     var shape = '';
 
-    if (isLine && pts) {
+    if (d) {
+      shape = '<path class="' + cls + '" d="' + esc(d) + '"/>';
+    } else if (isLine && pts) {
       shape = '<polyline class="' + cls + '" points="' + esc(pts) + '"/>';
     } else if (pts) {
       shape = '<polygon class="' + cls + '" points="' + esc(pts) + '"/>';
@@ -1509,75 +1570,36 @@
 
     var label = '';
     if (a.label && a.labelPos) {
-      label = '<text class="map-area__label" x="' + num(a.labelPos.x) + '" y="' + num(a.labelPos.y) +
-        '">' + esc(a.label) + '</text>';
+      // ピンと同様に逆スケールを掛け、拡大しても文字サイズを一定に保つ
+      var inv = (1 / mapView.scale).toFixed(4);
+      label = '<g class="map-area__label-wrap" transform="translate(' +
+          num(a.labelPos.x) + ',' + num(a.labelPos.y) + ')">' +
+        '<text class="map-area__label" transform="scale(' + inv + ')">' + esc(a.label) + '</text>' +
+      '</g>';
     }
     return shape + label;
   }
 
-  var MAP_LABEL_FONT = 25;   // styles.css の .map-pin__label と揃える
-  var MAP_AREA_FONT = 28;    // styles.css の .map-area__label と揃える
-
-  /** ラベルのおおよその半幅(座標単位)。全角は1em、半角は約0.58emで見積もる */
-  function labelHalfWidth(text, fontSize) {
-    var w = 0;
-    for (var i = 0; i < text.length; i++) {
-      var c = text.charCodeAt(i);
-      var wide = (c >= 0x3000 && c <= 0x9fff) || (c >= 0xff00 && c <= 0xffef);
-      w += wide ? 1 : 0.58;
-    }
-    return w * fontSize / 2;
-  }
-
   /**
-   * 重なって読めなくなるピン名を間引く。
-   * 面ラベル(ノースウイング等)を先に置き、そこへ重なるピン名は隠す。
-   * 隠れたピンも、タップして選択すれば名前が出る。
+   * ピン。内側の <g> に逆スケールを掛けることで、
+   * ズームしても画面上の大きさが変わらないようにする。
    */
-  function crowdedLabels(pins, areas) {
-    var placed = [];
-    var hidden = {};
-
-    areas.forEach(function (a) {
-      if (!a || !a.label || !a.labelPos) return;
-      placed.push({
-        x: num(a.labelPos.x),
-        y: num(a.labelPos.y),
-        half: labelHalfWidth(String(a.label), MAP_AREA_FONT)
-      });
-    });
-
-    pins.forEach(function (pin, i) {
-      var text = pin ? String(pin.short || pin.name || '') : '';
-      if (!text) { hidden[i] = true; return; }
-      var half = labelHalfWidth(text, MAP_LABEL_FONT);
-      var x = num(pin.x);
-      var y = num(pin.y) + 52;
-      var clash = placed.some(function (p) {
-        return Math.abs(p.y - y) < 30 && Math.abs(p.x - x) < (p.half + half + 6);
-      });
-      if (clash) hidden[i] = true;
-      else placed.push({ x: x, y: y, half: half });
-    });
-    return hidden;
-  }
-
-  function renderMapPin(pin, index, crowded) {
+  function renderMapPin(pin, index) {
     if (!pin || typeof pin !== 'object') return '';
-    var selected = ui.mapPin === index;
     var label = pin.short || pin.name || '';
+    var inv = (1 / mapView.scale).toFixed(4);
     return '' +
-      '<g class="map-pin' + (selected ? ' is-selected' : '') +
-          (crowded ? ' is-crowded' : '') + '" data-act="map-pin" data-idx="' + index + '" ' +
+      '<g class="map-pin" data-act="map-pin" data-idx="' + index + '" ' +
           'transform="translate(' + num(pin.x) + ',' + num(pin.y) + ')" ' +
-          'role="button" tabindex="0" aria-pressed="' + (selected ? 'true' : 'false') + '" ' +
-          'aria-label="' + esc(pin.name || label) + '">' +
-        // viewBox(1000x700)を幅360px前後で表示するため、ピンは大きめの座標値で描く
-        '<circle class="map-pin__hit" r="34"/>' +
-        '<circle class="map-pin__halo" r="30"/>' +
-        '<circle class="map-pin__dot" r="22"/>' +
-        '<text class="map-pin__icon" y="9">' + esc(pin.icon || '📍') + '</text>' +
-        '<text class="map-pin__label" y="52">' + esc(label) + '</text>' +
+          'role="button" tabindex="0" aria-label="' + esc(pin.name || label) + '">' +
+        '<g class="map-pin__inner" transform="scale(' + inv + ')">' +
+          '<circle class="map-pin__hit" r="32"/>' +
+          '<circle class="map-pin__halo" r="29"/>' +
+          '<circle class="map-pin__mini" r="7"/>' +
+          '<circle class="map-pin__dot" r="21"/>' +
+          '<text class="map-pin__icon" y="8">' + esc(pin.icon || '📍') + '</text>' +
+          '<text class="map-pin__label" y="49">' + esc(label) + '</text>' +
+        '</g>' +
       '</g>';
   }
 
@@ -1611,7 +1633,113 @@
       '</div>';
   }
 
-  /* --- マップの拡大・移動 ---------------------------------------------- */
+  /* --- ラベルの間引き --------------------------------------------------- */
+
+  /** ラベルのおおよその半幅。全角は1em、半角は約0.58emで見積もる */
+  function labelHalfWidth(text, fontSize) {
+    var w = 0;
+    for (var i = 0; i < text.length; i++) {
+      var c = text.charCodeAt(i);
+      var wide = (c >= 0x3000 && c <= 0x9fff) || (c >= 0xff00 && c <= 0xffef);
+      w += wide ? 1 : 0.58;
+    }
+    return w * fontSize / 2;
+  }
+
+  /**
+   * どのピン名を出すかを決める。
+   * ズーム倍率が上がるとピンは逆スケールで小さくなるので、
+   * 同じ座標間隔でも実効的な余白が広がり、出せるラベルが増える。
+   */
+  function visibleLabels(pins, areas, scale, filterKey) {
+    var boxes = [];
+    var show = {};
+
+    // 面ラベル(地図と一緒に拡大される)を先に置き、ピン名はそこを避ける
+    areas.forEach(function (a) {
+      if (!a || !a.label || !a.labelPos) return;
+      boxes.push({
+        x: num(a.labelPos.x),
+        y: num(a.labelPos.y),
+        hw: labelHalfWidth(String(a.label), MAP_AREA_FONT) / scale,
+        hh: (MAP_AREA_FONT * 0.6) / scale
+      });
+    });
+
+    var filtering = !!filterKey && filterKey !== 'all';
+    // 倍率に応じて出す rank の上限。フィルタ中はそのカテゴリを全部出す
+    var maxRank = scale < 1.6 ? 1 : (scale < 2.6 ? 2 : 3);
+
+    var order = pins.map(function (pin, i) { return { pin: pin, i: i }; });
+    order.forEach(function (o) {
+      o.matched = pinInFilter(o.pin, filterKey);
+      o.rank = num(o.pin && o.pin.rank, 3);
+    });
+    order.sort(function (a, b) {
+      if (filtering && a.matched !== b.matched) return a.matched ? -1 : 1;
+      if (a.rank !== b.rank) return a.rank - b.rank;
+      return a.i - b.i;
+    });
+
+    order.forEach(function (o) {
+      var pin = o.pin;
+      var text = pin ? String(pin.short || pin.name || '') : '';
+      if (!text) return;
+      if (filtering && !o.matched) return;          // フィルタ外は名前を出さない
+      if (!filtering && o.rank > maxRank) return;   // まだ出す倍率ではない
+
+      // ピンは逆スケールされるので、図面上のラベル寸法は 1/scale になる
+      var hw = labelHalfWidth(text, MAP_PIN_FONT) / scale;
+      var hh = (MAP_PIN_FONT * 0.6) / scale;
+      var x = num(pin.x);
+      var y = num(pin.y) + 49 / scale;
+
+      var clash = boxes.some(function (b) {
+        return Math.abs(b.x - x) < (b.hw + hw + 3) && Math.abs(b.y - y) < (b.hh + hh + 2);
+      });
+      if (clash) return;
+      boxes.push({ x: x, y: y, hw: hw, hh: hh });
+      show[o.i] = true;
+    });
+
+    return show;
+  }
+
+  /**
+   * ピンの逆スケール・ラベル表示・フィルタ状態を DOM に反映する。
+   * 再描画しないので、切り替えても地図がちらつかない。
+   */
+  function refreshMapPins() {
+    var m = mapData();
+    if (!m) return;
+    var stage = $('#map-stage');
+    if (!stage) return;
+
+    var pins = Array.isArray(m.pins) ? m.pins : [];
+    var areas = Array.isArray(m.areas) ? m.areas : [];
+    var filterKey = ui.mapFilter || 'all';
+    var show = visibleLabels(pins, areas, mapView.scale, filterKey);
+    var inv = (1 / mapView.scale).toFixed(4);
+
+    $all('.map-area__label', stage).forEach(function (t) {
+      t.setAttribute('transform', 'scale(' + inv + ')');
+    });
+
+    $all('.map-pin', stage).forEach(function (g) {
+      var i = Number(g.getAttribute('data-idx'));
+      var inner = $('.map-pin__inner', g);
+      if (inner) inner.setAttribute('transform', 'scale(' + inv + ')');
+
+      var selected = ui.mapPin === i;
+      var dimmed = !pinInFilter(pins[i], filterKey);
+      g.classList.toggle('is-selected', selected);
+      g.classList.toggle('is-dimmed', dimmed);
+      g.classList.toggle('has-label', !!show[i]);
+      g.setAttribute('aria-pressed', selected ? 'true' : 'false');
+    });
+  }
+
+  /* --- 拡大・移動 ------------------------------------------------------- */
 
   function mapTransform() {
     return 'translate(' + mapView.tx.toFixed(1) + 'px,' + mapView.ty.toFixed(1) + 'px) scale(' + mapView.scale.toFixed(3) + ')';
@@ -1633,6 +1761,7 @@
     if (stage) stage.style.transform = mapTransform();
     var reset = $('#map-reset');
     if (reset) reset.disabled = (mapView.scale === 1 && mapView.tx === 0 && mapView.ty === 0);
+    refreshMapPins();
   }
 
   function setMapScale(next, recenter) {
@@ -2089,6 +2218,18 @@
     'map-close': function () {
       ui.mapPin = null;
       renderResort();
+    },
+    'map-filter': function (btn) {
+      var key = btn.getAttribute('data-key') || 'all';
+      if (ui.mapFilter === key) return;
+      ui.mapFilter = key;
+      // チップの見た目だけ差し替え、地図は再描画せずクラスで切り替える
+      $all('.map-filter').forEach(function (el) {
+        var active = el.getAttribute('data-key') === key;
+        el.classList.toggle('is-active', active);
+        el.setAttribute('aria-pressed', active ? 'true' : 'false');
+      });
+      refreshMapPins();
     },
     'map-zoom': function (btn) {
       var dir = btn.getAttribute('data-dir');

@@ -991,36 +991,42 @@ a:hover { text-decoration: underline; }
 /* --- 館内マップ ---------------------------------------------------------- */
 
 :root {
-  --map-bg:        #eef6f8;
-  --map-sea-1:     #8fd8ea;
-  --map-sea-2:     #3fa6c6;
-  --map-beach:     #f5e6c0;
-  --map-green:     #c3e4c6;
-  --map-building:  #dfe7eb;
-  --map-building-line: #bccdd5;
-  --map-pool:      #a9e2f2;
-  --map-road:      #d8e2e7;
-  --map-label:     #46626c;
-  --map-pin-fill:  #ffffff;
-  --map-pin-line:  #9fb6bf;
-  --map-pin-text:  #1d3a44;
+  --map-bg:            #f1f6f7;
+  --map-sea-1:         #bfe2ee;
+  --map-sea-2:         #93c9dd;
+  --map-beach:         #f1e6ce;
+  --map-green:         #dcebdc;
+  --map-green-2:       #cbe1cb;
+  --map-building:      #e7edf0;
+  --map-building-line: #d3dfe4;
+  --map-pool:          #c6e5f1;
+  --map-road:          #e6ecee;
+  --map-parking:       #e0e7ea;
+  --map-pier:          #ddd0b8;
+  --map-label:         #64818b;
+  --map-pin-fill:      #ffffff;
+  --map-pin-line:      #b6c8cf;
+  --map-pin-text:      #24434e;
 }
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --map-bg:        #0a2129;
-    --map-sea-1:     #17566c;
-    --map-sea-2:     #0a3644;
-    --map-beach:     #5a4e33;
-    --map-green:     #24513a;
-    --map-building:  #1e3e49;
-    --map-building-line: #2f5b69;
-    --map-pool:      #1d5f77;
-    --map-road:      #234653;
-    --map-label:     #a9c7d0;
-    --map-pin-fill:  #12303a;
-    --map-pin-line:  #3a6a7a;
-    --map-pin-text:  #e6f4f7;
+    --map-bg:            #0b232b;
+    --map-sea-1:         #17495b;
+    --map-sea-2:         #0e3240;
+    --map-beach:         #4b483a;
+    --map-green:         #1d3f33;
+    --map-green-2:       #24513f;
+    --map-building:      #1c3944;
+    --map-building-line: #2b5462;
+    --map-pool:          #195265;
+    --map-road:          #1f3d48;
+    --map-parking:       #1b343e;
+    --map-pier:          #4a4030;
+    --map-label:         #9dbcc6;
+    --map-pin-fill:      #12303a;
+    --map-pin-line:      #3d6c7c;
+    --map-pin-text:      #e6f4f7;
   }
 }
 
@@ -1060,44 +1066,50 @@ a:hover { text-decoration: underline; }
 .map-sea-stop1 { stop-color: var(--map-sea-1); }
 .map-sea-stop2 { stop-color: var(--map-sea-2); }
 
+/* --- 面 --- */
 .map-area { stroke: none; }
 .map-area--sea      { fill: url(#map-sea-grad); }
 .map-area--beach    { fill: var(--map-beach); }
 .map-area--green    { fill: var(--map-green); }
+.map-area--green2   { fill: var(--map-green-2); }
 .map-area--pool     { fill: var(--map-pool); }
-.map-area--building { fill: var(--map-building); stroke: var(--map-building-line); stroke-width: 2; }
+.map-area--pier     { fill: var(--map-pier); }
+.map-area--parking  { fill: var(--map-parking); stroke: var(--map-building-line); stroke-width: 1.5; }
 
-.map-area--road,
-.map-area--path {
-  fill: var(--map-road);
-  stroke: none;
+.map-area--building {
+  fill: var(--map-building);
+  stroke: var(--map-building-line);
+  stroke-width: 1.5;
 }
 
-/* 線として渡された道は塗りではなくストロークで描く */
+/* 道は控えめに。線で渡された場合だけストロークで描く */
+.map-area--road,
+.map-area--path { fill: var(--map-road); stroke: none; }
+
 polyline.map-area--road,
 polyline.map-area--path {
   fill: none;
   stroke: var(--map-road);
-  stroke-width: 14;
+  stroke-width: 12;
   stroke-linecap: round;
   stroke-linejoin: round;
 }
 
-polyline.map-area--path { stroke-width: 8; stroke-dasharray: 14 10; }
+.map-area__label-wrap { pointer-events: none; }
 
 .map-area__label {
   fill: var(--map-label);
-  font-size: 28px;
-  font-weight: 700;
+  font-size: 24px;
+  font-weight: 600;
   text-anchor: middle;
   pointer-events: none;
-  opacity: .8;
+  opacity: .85;
 }
 
 /* --- ピン --- */
 .map-pin { cursor: pointer; }
 
-/* 実寸では小さくなるので、見た目より広いタップ範囲を用意する */
+/* 見た目より広いタップ範囲 */
 .map-pin__hit { fill: none; pointer-events: all; }
 
 .map-pin__halo {
@@ -1109,46 +1121,97 @@ polyline.map-area--path { stroke-width: 8; stroke-dasharray: 14 10; }
 .map-pin__dot {
   fill: var(--map-pin-fill);
   stroke: var(--map-pin-line);
-  stroke-width: 2;
-  transition: fill .15s ease, stroke .15s ease;
+  stroke-width: 1.6;
+  transition: stroke .15s ease, stroke-width .15s ease, opacity .15s ease;
+}
+
+.map-pin__mini {
+  fill: var(--map-pin-line);
+  opacity: 0;
+  transition: opacity .15s ease;
 }
 
 .map-pin__icon {
-  font-size: 26px;
+  font-size: 24px;
   text-anchor: middle;
   pointer-events: none;
+  transition: opacity .15s ease;
 }
 
 .map-pin__label {
   fill: var(--map-pin-text);
-  font-size: 25px;
+  font-size: 23px;
   font-weight: 700;
   text-anchor: middle;
   pointer-events: none;
   paint-order: stroke;
   stroke: var(--map-bg);
-  stroke-width: 6px;
+  stroke-width: 5px;
   stroke-linejoin: round;
-  transition: opacity .15s ease;
+  opacity: 0;                       /* 表示は JS が has-label で決める */
+  transition: opacity .18s ease;
 }
 
-/* 重なって読めないラベルは隠す(選択したピンは必ず出す) */
-.map-pin.is-crowded .map-pin__label { opacity: 0; }
-.map-pin.is-selected .map-pin__label { opacity: 1; }
+.map-pin.has-label .map-pin__label { opacity: 1; }
 
-.map-pin.is-selected .map-pin__halo { opacity: .28; }
+/* 選択中 */
+.map-pin.is-selected .map-pin__halo { opacity: .22; }
 
-/* 選択時は塗りつぶさずに輪を太くする(アイコンの絵文字が読めるように) */
 .map-pin.is-selected .map-pin__dot {
-  fill: var(--map-pin-fill);
   stroke: var(--accent);
-  stroke-width: 6;
+  stroke-width: 4;
 }
 
-.map-pin.is-selected .map-pin__label { fill: var(--accent); }
+.map-pin.is-selected .map-pin__label {
+  opacity: 1;
+  fill: var(--accent);
+}
+
+/* フィルタで外れたピンは小さな半透明ドットに */
+.map-pin.is-dimmed .map-pin__dot,
+.map-pin.is-dimmed .map-pin__icon { opacity: 0; }
+.map-pin.is-dimmed .map-pin__label { opacity: 0; }
+.map-pin.is-dimmed .map-pin__mini { opacity: .45; }
 
 .map-pin:focus { outline: none; }
 .map-pin:focus-visible .map-pin__halo { opacity: .4; }
+
+/* --- カテゴリフィルタ --- */
+.map-filters {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 10px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  padding-bottom: 2px;
+}
+
+.map-filters::-webkit-scrollbar { display: none; }
+
+.map-filter {
+  flex: 0 0 auto;
+  min-height: 34px;
+  padding: 0 9px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text-soft);
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: -.01em;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color .15s ease, color .15s ease, border-color .15s ease;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.map-filter__icon { font-size: 12px; margin-right: 1px; }
+
+.map-filter.is-active {
+  background: var(--accent);
+  border-color: transparent;
+  color: var(--accent-contrast);
+}
 
 /* --- ズームUI --- */
 .map-zoom { display: flex; gap: 4px; }
@@ -1203,6 +1266,7 @@ polyline.map-area--path { stroke-width: 8; stroke-dasharray: 14 10; }
 
 @media (prefers-reduced-motion: reduce) {
   .map-detail { animation: none; }
+  .map-pin__label, .map-pin__dot, .map-pin__halo, .map-pin__mini { transition: none; }
 }
 
 /* --- リゾート情報 ⇄ 予定 の連携 ------------------------------------------ */
