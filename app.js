@@ -306,7 +306,10 @@
     shareError: null,     // 共有カードのインラインエラー
     shareErrorDetail: null, // 失敗したプロバイダと理由(原因調査用の一行)
     shareAdvancedOpen: false, // 「上級者設定」の開閉
-    shareBusy: null       // 実行中の共有操作 ('create' | 'join' | 'test')
+    shareBusy: null,      // 実行中の共有操作 ('create' | 'join' | 'test')
+    mapRoomForm: false,   // 「部屋を設定」フォームの開閉
+    mapRoomError: null,   // 部屋番号入力のインラインエラー
+    mapRoute: null        // null | { pinIndex, label, nodePath: [nodeId], dist }
   };
 
   /** 同期からの反映中は、保存フックで同期を呼び返さないようにする */
@@ -1288,6 +1291,17 @@
         );
       }
     }
+    // 部屋設定済みなら「部屋からのルート」(マップにピンがある施設のみ)
+    var routeHint = '';
+    var routeIdx = routablePinIndex(catId, item.name);
+    if (routeIdx >= 0) {
+      chips.push(
+        '<button type="button" class="chip chip--btn" data-act="poi-route" ' +
+          'data-pin="' + routeIdx + '">🚶 部屋からのルート</button>'
+      );
+    } else if (origin === 'map' && !myRoom() && mapHasRouting(mapData())) {
+      routeHint = '<p class="small muted poi__route-hint">🏠 上の「部屋を設定」をすると、部屋からのルートを表示できます。</p>';
+    }
 
     return '' +
       '<article class="poi">' +
@@ -1299,6 +1313,7 @@
         (item.tips ? '<p class="poi__tips">💡 ' + esc(item.tips) + '</p>' : '') +
         (item.kidsNote ? '<p class="poi__kids">👧 ' + esc(item.kidsNote) + '</p>' : '') +
         (chips.length ? '<div class="chip-row">' + chips.join('') + '</div>' : '') +
+        routeHint +
         (formOpen ? renderPoiAddForm(item, catId, idPrefix) : '') +
       '</article>';
   }
@@ -1428,6 +1443,30 @@
     { key: 'other', label: 'その他', icon: '🚗', cats: ['access', null] }
   ];
 
+  /**
+   * v3(横長viewBox)対応のスケール基準。
+   *  ・mapUiK: ピン・ラベルの見た目サイズを viewBox 幅 1000 基準に合わせる係数
+   *  ・mapMinScale: 横長マップは「高さが枠に収まる」倍率を最小ズームにする
+   *    (最小ズームでも左右にパンして全体を見る、地図アプリと同じ操作感)
+   */
+  function mapUiK() {
+    return MAP_VIEWBOX.w / 1000;
+  }
+  function mapMinScale() {
+    return (MAP_VIEWBOX.w / MAP_VIEWBOX.h > 10 / 7) ? 2 : 1;
+  }
+  function mapMaxScale() {
+    return MAP_MAX_SCALE * mapMinScale();
+  }
+  /** 最小ズームを1とした相対倍率(ラベル出し分けに使う) */
+  function mapRelScale() {
+    return mapView.scale / mapMinScale();
+  }
+  /** ピン等の逆スケール値 */
+  function mapInv() {
+    return (mapUiK() / mapView.scale).toFixed(4);
+  }
+
   /** 現在の拡大・移動量。再描画をまたいで保持する */
   var mapView = { scale: 1, tx: 0, ty: 0 };
   var mapGesture = {
@@ -1442,10 +1481,147 @@
       var m = window.RESORT_MAP;
       if (!m || typeof m !== 'object') return null;
       if (!Array.isArray(m.areas) && !Array.isArray(m.pins)) return null;
+      // v3: データ側が viewBox を持つ場合はそれに合わせる
+      if (m.viewBox && isFinite(Number(m.viewBox.w)) && Number(m.viewBox.w) > 0 &&
+          isFinite(Number(m.viewBox.h)) && Number(m.viewBox.h) > 0) {
+        MAP_VIEWBOX = { w: Number(m.viewBox.w), h: Number(m.viewBox.h) };
+      }
       return m;
     } catch (e) {
       return null;
     }
+  }
+
+  /* --- v3: 自分の部屋とルート案内 ---------------------------------------- */
+
+  /** 経路グラフを持つ v3 データか */
+  function mapHasRouting(m) {
+    return !!(m && Array.isArray(m.nodes) && m.nodes.length > 1 &&
+              Array.isArray(m.edges) && Array.isArray(m.buildings));
+  }
+
+  /** 保存済みの自分の部屋 { room: "V213", buildingId } | null */
+  function myRoom() {
+    var r = store.get('myRoom', null);
+    if (!r || typeof r !== 'object' || !r.room || !r.buildingId) return null;
+    return findBuildingById(r.buildingId) ? r : null;
+  }
+
+  function findBuildingById(id) {
+    var m = mapData();
+    if (!m || !Array.isArray(m.buildings)) return null;
+    for (var i = 0; i < m.buildings.length; i++) {
+      if (m.buildings[i] && m.buildings[i].id === id) return m.buildings[i];
+    }
+    return null;
+  }
+
+  /**
+   * 部屋番号入力を解決する。"V213" / "v 213" / "213" を受け付ける。
+   * 戻り値: { room, building } | { error } | { ambiguous: ["V213", "N213", ...] }
+   */
+  function resolveRoomInput(raw) {
+    var m = mapData();
+    if (!mapHasRouting(m)) return { error: 'マップデータを読み込めませんでした。' };
+    var s = String(raw || '').toUpperCase().replace(/[\s\-_]/g, '');
+    var mm = /^([SVTN]?)(\d{3})$/.exec(s);
+    if (!mm) return { error: '部屋番号は「V213」のように入力してください。' };
+    var prefix = mm[1];
+    var num = Number(mm[2]);
+    var hits = [];
+    m.buildings.forEach(function (b) {
+      (Array.isArray(b.rooms) ? b.rooms : []).forEach(function (r) {
+        if (prefix && r.prefix !== prefix) return;
+        if (num >= r.from && num <= r.to) hits.push({ room: r.prefix + num, building: b });
+      });
+    });
+    if (hits.length === 1) return hits[0];
+    if (hits.length > 1) return { ambiguous: hits.map(function (h) { return h.room; }) };
+    return { error: '該当する部屋が見つかりません。番号をご確認ください。' };
+  }
+
+  /** ダイクストラ法。{ dist, path: [nodeId] } | null */
+  function shortestPath(m, fromId, toId) {
+    try {
+      var pos = {}, adjacent = {};
+      m.nodes.forEach(function (n) { pos[n.id] = n; adjacent[n.id] = []; });
+      m.edges.forEach(function (e) {
+        if (!e || !pos[e[0]] || !pos[e[1]]) return;
+        adjacent[e[0]].push(e[1]);
+        adjacent[e[1]].push(e[0]);
+      });
+      if (!pos[fromId] || !pos[toId]) return null;
+      var dist = {}, prev = {}, unvisited = {};
+      m.nodes.forEach(function (n) { dist[n.id] = Infinity; unvisited[n.id] = true; });
+      dist[fromId] = 0;
+      for (;;) {
+        var u = null, best = Infinity;
+        for (var id in unvisited) if (dist[id] < best) { best = dist[id]; u = id; }
+        if (u === null || u === toId) break;
+        delete unvisited[u];
+        adjacent[u].forEach(function (v) {
+          if (!unvisited[v]) return;
+          var alt = dist[u] + Math.hypot(pos[u].x - pos[v].x, pos[u].y - pos[v].y);
+          if (alt < dist[v]) { dist[v] = alt; prev[v] = u; }
+        });
+      }
+      if (!isFinite(dist[toId])) return null;
+      var path = [toId];
+      while (path[0] !== fromId) {
+        if (!prev[path[0]]) return null;
+        path.unshift(prev[path[0]]);
+      }
+      return { dist: dist[toId], path: path };
+    } catch (e) {
+      return null;
+    }
+  }
+
+  /** 距離(座標単位)→「徒歩約◯分」 */
+  function walkLabel(distUnits) {
+    var m = mapData();
+    var mpu = (m && isFinite(Number(m.metersPerUnit))) ? Number(m.metersPerUnit) : 0.4;
+    var minutes = Math.round(distUnits * mpu / 67);
+    return minutes < 1 ? '徒歩すぐ' : '徒歩約' + minutes + '分';
+  }
+
+  /** cat+name のピンが v3 マップ上にあれば index を返す */
+  function routablePinIndex(cat, name) {
+    var m = mapData();
+    if (!mapHasRouting(m) || !myRoom()) return -1;
+    var pins = Array.isArray(m.pins) ? m.pins : [];
+    for (var i = 0; i < pins.length; i++) {
+      var p = pins[i];
+      if (p && p.node && p.name === name && (p.cat || null) === (cat || null)) return i;
+    }
+    return -1;
+  }
+
+  /** 部屋の設定/解除後は、ルートボタンを持つ全パネルを描き直す */
+  function renderAfterRoomChange() {
+    renderResort();
+    renderSchedule();
+    renderHome();
+  }
+
+  /** 自室からピンへのルートを計算して表示状態にする */
+  function startRouteToPin(pinIndex) {
+    var m = mapData();
+    var room = myRoom();
+    if (!mapHasRouting(m) || !room) return false;
+    var pin = (m.pins || [])[pinIndex];
+    var from = findBuildingById(room.buildingId);
+    if (!pin || !from || !from.node || !pin.node) return false;
+    var sp = shortestPath(m, from.node, pin.node);
+    if (!sp) return false;
+    ui.mapRoute = {
+      pinIndex: pinIndex,
+      label: pin.short || pin.name || '',
+      nodePath: sp.path,
+      dist: sp.dist
+    };
+    ui.mapPin = pinIndex;
+    return true;
   }
 
   /** 数値として妥当なものだけ通す(不正なデータでSVGが壊れないように) */
@@ -1492,6 +1668,7 @@
     var areas = Array.isArray(m.areas) ? m.areas : [];
     var pins = Array.isArray(m.pins) ? m.pins : [];
     var official = safeUrl(m.officialMapUrl);
+    if (mapView.scale < mapMinScale()) mapView.scale = mapMinScale();
 
     var svg = '' +
       '<svg class="map-svg" viewBox="0 0 ' + MAP_VIEWBOX.w + ' ' + MAP_VIEWBOX.h + '" ' +
@@ -1504,6 +1681,8 @@
         '</defs>' +
         '<rect class="map-bg" x="0" y="0" width="' + MAP_VIEWBOX.w + '" height="' + MAP_VIEWBOX.h + '"/>' +
         '<g class="map-areas">' + areas.map(renderMapArea).join('') + '</g>' +
+        '<g class="map-bldgs">' + renderMapBuildings(m) + '</g>' +
+        renderMapRoute(m) +
         '<g class="map-pins">' + pins.map(renderMapPin).join('') + '</g>' +
       '</svg>';
 
@@ -1519,6 +1698,8 @@
           '</div>' +
         '</div>' +
         renderMapFilters() +
+        renderMapRoomBar(m) +
+        renderMapRouteBar(m) +
         '<div class="map-card">' +
           '<div class="map-viewport" id="map-viewport">' +
             '<div class="map-stage" id="map-stage" style="transform:' + mapTransform() + '">' + svg + '</div>' +
@@ -1542,6 +1723,103 @@
           '<span class="map-filter__icon" aria-hidden="true">' + esc(f.icon) + '</span>' + esc(f.label) +
         '</button>';
       }).join('') + '</div>';
+  }
+
+  /** v3: 客室棟レイヤー。ラベルは拡大時のみ(CSSで切替) */
+  function renderMapBuildings(m) {
+    var buildings = Array.isArray(m.buildings) ? m.buildings : [];
+    if (!buildings.length) return '';
+    var room = myRoom();
+    var inv = mapInv();
+    return buildings.map(function (b) {
+      if (!b || !b.rect) return '';
+      var mine = !!(room && room.buildingId === b.id);
+      var r = b.rect;
+      var shape = '<rect class="map-bldg' + (mine ? ' is-myroom' : '') + '" x="' + num(r.x) +
+        '" y="' + num(r.y) + '" width="' + num(r.w) + '" height="' + num(r.h) + '" rx="' + num(r.r, 3) + '"/>';
+      var label = '';
+      if (b.label) {
+        var cx = isFinite(Number(b.cx)) ? Number(b.cx) : num(r.x) + num(r.w) / 2;
+        var cy = isFinite(Number(b.cy)) ? Number(b.cy) : num(r.y) + num(r.h) / 2;
+        label = '<g class="map-bldg__label-wrap" transform="translate(' + cx + ',' + cy + ')">' +
+          '<text class="map-bldg__label' + (mine ? ' is-myroom' : '') + '" transform="scale(' + inv + ')">' +
+            (mine ? '🏠 ' : '') + esc(b.label) + '</text></g>';
+      }
+      return shape + label;
+    }).join('');
+  }
+
+  /** v3: 自室からのルート線と🏠マーカー */
+  function renderMapRoute(m) {
+    var route = ui.mapRoute;
+    var room = myRoom();
+    if (!route || !room || !mapHasRouting(m)) return '';
+    var from = findBuildingById(room.buildingId);
+    var pin = (m.pins || [])[route.pinIndex];
+    if (!from || !pin) return '';
+    var pos = {};
+    m.nodes.forEach(function (n) { pos[n.id] = n; });
+    var pts = [[num(from.cx), num(from.cy)]];
+    route.nodePath.forEach(function (id) { if (pos[id]) pts.push([pos[id].x, pos[id].y]); });
+    pts.push([num(pin.x), num(pin.y)]);
+    var inv = mapInv();
+    return '<g class="map-route">' +
+      '<polyline class="map-route__line" points="' +
+        pts.map(function (p) { return p[0] + ',' + p[1]; }).join(' ') + '"/>' +
+      '<g class="map-route__start" transform="translate(' + num(from.cx) + ',' + num(from.cy) + ')">' +
+        '<g transform="scale(' + inv + ')">' +
+          '<circle class="map-route__start-dot" r="21"/>' +
+          '<text class="map-route__start-icon" y="8">🏠</text>' +
+        '</g>' +
+      '</g>' +
+    '</g>';
+  }
+
+  /** v3: 部屋設定バー(マップ上部) */
+  function renderMapRoomBar(m) {
+    if (!mapHasRouting(m)) return '';
+    var room = myRoom();
+    if (ui.mapRoomForm) {
+      return '' +
+        '<form class="map-room map-room--form" data-form="map-room" novalidate>' +
+          '<label class="field__label" for="map-room-input">部屋番号(ルームキーの番号)</label>' +
+          '<div class="field-row field-row--tight">' +
+            '<input class="input" type="text" id="map-room-input" name="room" ' +
+              'placeholder="例: V213 / N116 / T205 / S318" autocomplete="off" ' +
+              'inputmode="text" maxlength="8" data-keep>' +
+            '<button type="submit" class="btn btn--sm btn--primary">保存</button>' +
+            '<button type="button" class="btn btn--sm btn--ghost" data-act="map-room-cancel">キャンセル</button>' +
+          '</div>' +
+          (ui.mapRoomError ? '<div class="share-error" role="alert">⚠️ ' + esc(ui.mapRoomError) + '</div>' : '') +
+        '</form>';
+    }
+    if (room) {
+      var b = findBuildingById(room.buildingId);
+      return '' +
+        '<div class="map-room">' +
+          '<span class="map-room__badge">🏠 ' + esc(room.room) +
+            (b && b.group ? ' <span class="muted">(' + esc(b.group) + ')</span>' : '') + '</span>' +
+          '<button type="button" class="btn btn--sm btn--ghost" data-act="map-room-open">変更</button>' +
+          '<button type="button" class="btn btn--sm btn--ghost" data-act="map-room-clear">解除</button>' +
+        '</div>';
+    }
+    return '' +
+      '<div class="map-room">' +
+        '<button type="button" class="btn btn--sm btn--ghost btn--block" data-act="map-room-open">' +
+          '🏠 部屋を設定(部屋からのルート表示に使います)</button>' +
+      '</div>';
+  }
+
+  /** v3: ルート表示中の案内バー */
+  function renderMapRouteBar(m) {
+    var route = ui.mapRoute;
+    if (!route || !myRoom() || !mapHasRouting(m)) return '';
+    return '' +
+      '<div class="map-route-bar">' +
+        '<span class="map-route-bar__text">🚶 ' + esc(route.label) + 'まで ' +
+          '<strong>' + esc(walkLabel(route.dist)) + '</strong><span class="muted">(目安)</span></span>' +
+        '<button type="button" class="btn btn--sm btn--ghost" data-act="route-end">案内を終了</button>' +
+      '</div>';
   }
 
   /** 背景の面。rect / polygon / path(d)に対応 */
@@ -1571,7 +1849,7 @@
     var label = '';
     if (a.label && a.labelPos) {
       // ピンと同様に逆スケールを掛け、拡大しても文字サイズを一定に保つ
-      var inv = (1 / mapView.scale).toFixed(4);
+      var inv = mapInv();
       label = '<g class="map-area__label-wrap" transform="translate(' +
           num(a.labelPos.x) + ',' + num(a.labelPos.y) + ')">' +
         '<text class="map-area__label" transform="scale(' + inv + ')">' + esc(a.label) + '</text>' +
@@ -1587,7 +1865,7 @@
   function renderMapPin(pin, index) {
     if (!pin || typeof pin !== 'object') return '';
     var label = pin.short || pin.name || '';
-    var inv = (1 / mapView.scale).toFixed(4);
+    var inv = mapInv();
     return '' +
       '<g class="map-pin" data-act="map-pin" data-idx="' + index + '" ' +
           'transform="translate(' + num(pin.x) + ',' + num(pin.y) + ')" ' +
@@ -1661,14 +1939,15 @@
       boxes.push({
         x: num(a.labelPos.x),
         y: num(a.labelPos.y),
-        hw: labelHalfWidth(String(a.label), MAP_AREA_FONT) / scale,
-        hh: (MAP_AREA_FONT * 0.6) / scale
+        hw: labelHalfWidth(String(a.label), MAP_AREA_FONT * mapUiK()) / scale,
+        hh: (MAP_AREA_FONT * 0.6 * mapUiK()) / scale
       });
     });
 
     var filtering = !!filterKey && filterKey !== 'all';
     // 倍率に応じて出す rank の上限。フィルタ中はそのカテゴリを全部出す
-    var maxRank = scale < 1.6 ? 1 : (scale < 2.6 ? 2 : 3);
+    var rel = scale / mapMinScale();
+    var maxRank = rel < 1.6 ? 1 : (rel < 2.6 ? 2 : 3);
 
     var order = pins.map(function (pin, i) { return { pin: pin, i: i }; });
     order.forEach(function (o) {
@@ -1689,10 +1968,10 @@
       if (!filtering && o.rank > maxRank) return;   // まだ出す倍率ではない
 
       // ピンは逆スケールされるので、図面上のラベル寸法は 1/scale になる
-      var hw = labelHalfWidth(text, MAP_PIN_FONT) / scale;
-      var hh = (MAP_PIN_FONT * 0.6) / scale;
+      var hw = labelHalfWidth(text, MAP_PIN_FONT * mapUiK()) / scale;
+      var hh = (MAP_PIN_FONT * 0.6 * mapUiK()) / scale;
       var x = num(pin.x);
-      var y = num(pin.y) + 49 / scale;
+      var y = num(pin.y) + 49 * mapUiK() / scale;
 
       var clash = boxes.some(function (b) {
         return Math.abs(b.x - x) < (b.hw + hw + 3) && Math.abs(b.y - y) < (b.hh + hh + 2);
@@ -1719,11 +1998,24 @@
     var areas = Array.isArray(m.areas) ? m.areas : [];
     var filterKey = ui.mapFilter || 'all';
     var show = visibleLabels(pins, areas, mapView.scale, filterKey);
-    var inv = (1 / mapView.scale).toFixed(4);
+    var inv = mapInv();
 
     $all('.map-area__label', stage).forEach(function (t) {
       t.setAttribute('transform', 'scale(' + inv + ')');
     });
+
+    // v3: 棟ラベルも画面上一定サイズ。1.6倍以上で表示する
+    $all('.map-bldg__label', stage).forEach(function (t) {
+      t.setAttribute('transform', 'scale(' + inv + ')');
+    });
+    var svgRoot = $('.map-svg', stage);
+    if (svgRoot) svgRoot.classList.toggle('show-bldg-labels', mapRelScale() >= 1.55);
+
+    // v3: ルート線は画面上の太さを一定に保つ
+    var routeLine = $('.map-route__line', stage);
+    if (routeLine) routeLine.setAttribute('stroke-width', (14 * mapUiK() / mapView.scale).toFixed(2));
+    var routeStart = $('.map-route__start > g', stage);
+    if (routeStart) routeStart.setAttribute('transform', 'scale(' + inv + ')');
 
     $all('.map-pin', stage).forEach(function (g) {
       var i = Number(g.getAttribute('data-idx'));
@@ -1749,8 +2041,11 @@
   function clampMapView() {
     var vp = $('#map-viewport');
     if (!vp) return;
-    var maxX = vp.clientWidth * (mapView.scale - 1) / 2;
-    var maxY = vp.clientHeight * (mapView.scale - 1) / 2;
+    // SVGは枠の幅いっぱいに描かれ(meet)、縦は viewBox 比で決まる
+    var contentW = vp.clientWidth * mapView.scale;
+    var contentH = vp.clientWidth * (MAP_VIEWBOX.h / MAP_VIEWBOX.w) * mapView.scale;
+    var maxX = Math.max(0, (contentW - vp.clientWidth) / 2);
+    var maxY = Math.max(0, (contentH - vp.clientHeight) / 2);
     mapView.tx = Math.max(-maxX, Math.min(maxX, mapView.tx));
     mapView.ty = Math.max(-maxY, Math.min(maxY, mapView.ty));
   }
@@ -1760,13 +2055,13 @@
     var stage = $('#map-stage');
     if (stage) stage.style.transform = mapTransform();
     var reset = $('#map-reset');
-    if (reset) reset.disabled = (mapView.scale === 1 && mapView.tx === 0 && mapView.ty === 0);
+    if (reset) reset.disabled = (mapView.scale === mapMinScale() && mapView.tx === 0 && mapView.ty === 0);
     refreshMapPins();
   }
 
   function setMapScale(next, recenter) {
-    mapView.scale = Math.max(MAP_MIN_SCALE, Math.min(MAP_MAX_SCALE, next));
-    if (recenter || mapView.scale === MAP_MIN_SCALE) {
+    mapView.scale = Math.max(mapMinScale(), Math.min(mapMaxScale(), next));
+    if (recenter || mapView.scale === mapMinScale()) {
       mapView.tx = 0;
       mapView.ty = 0;
     }
@@ -1776,18 +2071,19 @@
   /** 拡大中に選んだピンが画面外に行かないよう中央へ寄せる */
   function centerMapOn(pin) {
     var vp = $('#map-viewport');
-    if (!vp || !pin || mapView.scale <= MAP_MIN_SCALE) { applyMapView(); return; }
+    if (!vp || !pin) { applyMapView(); return; }
     var w = vp.clientWidth;
     var h = vp.clientHeight;
+    var innerH = w * (MAP_VIEWBOX.h / MAP_VIEWBOX.w);       // meet で描かれた中身の高さ
     var px = num(pin.x) / MAP_VIEWBOX.w * w;
-    var py = num(pin.y) / MAP_VIEWBOX.h * h;
+    var py = (h - innerH) / 2 + num(pin.y) / MAP_VIEWBOX.h * innerH;
     mapView.tx = -(px - w / 2) * mapView.scale;
     mapView.ty = -(py - h / 2) * mapView.scale;
     applyMapView();
   }
 
   function resetMapView() {
-    mapView.scale = 1;
+    mapView.scale = mapMinScale();
     mapView.tx = 0;
     mapView.ty = 0;
     applyMapView();
@@ -1813,7 +2109,6 @@
     var dx = x - mapGesture.startX;
     var dy = y - mapGesture.startY;
     if (Math.abs(dx) + Math.abs(dy) > 6) mapGesture.moved = true;
-    if (mapView.scale <= MAP_MIN_SCALE) return;   // 等倍のときは動かさない
     mapView.tx = mapGesture.baseTx + dx;
     mapView.ty = mapGesture.baseTy + dy;
     applyMapView();
@@ -2238,6 +2533,40 @@
       else resetMapView();
     },
 
+    /* v3: 部屋設定とルート案内 */
+    'map-room-open': function () {
+      ui.mapRoomForm = true;
+      ui.mapRoomError = null;
+      renderResort();
+      focusFirstField('#map-room-input');
+    },
+    'map-room-cancel': function () {
+      ui.mapRoomForm = false;
+      ui.mapRoomError = null;
+      renderResort();
+    },
+    'map-room-clear': function () {
+      store.remove('myRoom');
+      ui.mapRoute = null;
+      renderAfterRoomChange();
+      toast('部屋の設定を解除しました');
+    },
+    'poi-route': function (btn) {
+      var idx = Number(btn.getAttribute('data-pin'));
+      if (!isFinite(idx)) return;
+      if (!startRouteToPin(idx)) { toast('ルートを計算できませんでした'); return; }
+      if (state.tab !== 'resort') switchTab('resort');
+      renderResort();
+      var m = mapData();
+      centerMapOn((m && m.pins) ? m.pins[idx] : null);
+      var card = $('.map-card');
+      if (card && card.scrollIntoView) card.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    },
+    'route-end': function () {
+      ui.mapRoute = null;
+      renderResort();
+    },
+
     /* リゾート情報 */
     'toggle-cat': function (btn) {
       var id = btn.getAttribute('data-id');
@@ -2501,6 +2830,23 @@
       ui.poiForm = null;
       renderResort();          // リゾートタブに留まる
       toast('予定に追加しました');
+
+    } else if (kind === 'map-room') {
+      var res = resolveRoomInput(val('room'));
+      if (res.error) { ui.mapRoomError = res.error; renderResort(); focusFirstField('#map-room-input'); return; }
+      if (res.ambiguous) {
+        ui.mapRoomError = '複数の候補があります: ' + res.ambiguous.join(' / ') +
+          ' — 頭の文字(S/V/T/N)も付けて入力してください。';
+        renderResort();
+        focusFirstField('#map-room-input');
+        return;
+      }
+      store.set('myRoom', { room: res.room, buildingId: res.building.id });
+      ui.mapRoomForm = false;
+      ui.mapRoomError = null;
+      ui.mapRoute = null;      // 部屋が変わったのでルートは引き直し
+      renderAfterRoomChange();
+      toast('部屋を ' + res.room + ' に設定しました');
 
     } else if (kind === 'check-add') {
       var text = val('text');
