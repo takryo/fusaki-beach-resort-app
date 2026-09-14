@@ -34,8 +34,8 @@ window.RESORT_MAP = {
     {
       id: "beach",
       kind: "beach",
-      label: "フサキビーチ",
-      labelPos: { x: 200, y: 500 },
+      label: null,
+      labelPos: null,
       points: "264,0 361,0 334,67 292,190 264,313 245,436 256,559 264,682 264,700 145,700 145,682 133,559 117,436 133,313 161,190 209,67",
       rect: null
     },
@@ -175,7 +175,7 @@ window.RESORT_MAP = {
       id: "central_village",
       kind: "building",
       label: "セントラルヴィレッジ",
-      labelPos: { x: 690, y: 216 },
+      labelPos: { x: 648, y: 243 },
       rect: { x: 570, y: 126, w: 244, h: 84, r: 10 },
       points: null
     },
@@ -198,8 +198,8 @@ window.RESORT_MAP = {
     {
       id: "eight_stars_village",
       kind: "building",
-      label: "エイトスターズヴィレッジ / ウェルネスセンター",
-      labelPos: { x: 718, y: 458 },
+      label: "エイトスターズヴィレッジ",
+      labelPos: { x: 640, y: 470 },
       rect: { x: 624, y: 362, w: 214, h: 96, r: 10 },
       points: null
     },
@@ -222,8 +222,8 @@ window.RESORT_MAP = {
     {
       id: "aquagarden_block",
       kind: "building",
-      label: "アクアガーデン",
-      labelPos: { x: 528, y: 212 },
+      label: null,
+      labelPos: null,
       rect: { x: 486, y: 196, w: 110, h: 72, r: 10 },
       points: null
     },
@@ -291,7 +291,7 @@ window.RESORT_MAP = {
     { cat: "facilities", name: "TERRACE SHOP", short: "テラスショップ", icon: "🏪", x: 620, y: 355 },
     { cat: "facilities", name: "大浴場", short: "大浴場", icon: "♨️", x: 714, y: 374 },
     { cat: "facilities", name: "FUSAKI SPA", short: "フサキスパ", icon: "💆", x: 665, y: 415 },
-    { cat: "facilities", name: "アニマルスクエア", short: "アニマルスクエア", icon: "🐐", x: 581, y: 659 },
+    { cat: "facilities", name: "アニマルスクエア", short: "アニマルスクエア", icon: "🐐", x: 581, y: 636 },
 
     /* ===== アクセス ===== */
     { cat: "access", name: "無料シャトルバス(南ぬ島石垣空港 ⇔ ホテル)", short: "送迎バス乗り場", icon: "🚌", x: 742, y: 108 },
