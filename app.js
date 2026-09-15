@@ -312,7 +312,8 @@
     shareBusy: null,      // 実行中の共有操作 ('create' | 'join' | 'test')
     mapRoomForm: false,   // 「部屋を設定」フォームの開閉
     mapRoomError: null,   // 部屋番号入力のインラインエラー
-    mapRoute: null        // null | { pinIndex, label, nodePath: [nodeId], dist }
+    mapRoute: null,       // null | { pinIndex, label, nodePath: [nodeId], dist }
+    tideDate: null        // 潮汐カードの表示日(nullなら今日)
   };
 
   /** 同期からの反映中は、保存フックで同期を呼び返さないようにする */
@@ -1053,6 +1054,193 @@
       '</section>';
   }
 
+  /* --- 潮汐(気象庁 潮位表・石垣) ---------------------------------------
+   * データは data/tide-data.js に同梱(天文予測のため確定値・オフライン可)。
+   * 単一系列のラインチャートなので凡例は置かず、タイトルが系列名を兼ねる。
+   * ------------------------------------------------------------------- */
+
+  function tideData() {
+    try {
+      var t = window.TIDE_DATA;
+      if (!t || typeof t !== 'object' || !t.days) return null;
+      return t;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  /** 表示中の日付(未指定なら今日) */
+  function tideDate() {
+    return ui.tideDate || todayISO();
+  }
+
+  function tideShiftDate(dateStr, delta) {
+    var d = new Date(dateStr + 'T12:00:00');
+    d.setDate(d.getDate() + delta);
+    return d.toISOString().slice(0, 10);
+  }
+
+  /** 月齢から潮名(大潮・中潮・小潮・長潮・若潮)を求める(目安) */
+  function tideNameOf(dateStr) {
+    var NAMES = ['大潮','大潮','大潮','中潮','中潮','中潮','中潮','小潮','小潮','小潮',
+                 '長潮','若潮','中潮','中潮','大潮','大潮','大潮','大潮','中潮','中潮',
+                 '中潮','中潮','小潮','小潮','小潮','長潮','若潮','中潮','中潮','大潮'];
+    var ref = Date.UTC(2000, 0, 6, 18, 14);   // 基準の新月
+    var t = new Date(dateStr + 'T12:00:00+09:00').getTime();
+    var age = ((t - ref) / 86400000) % 29.530588853;
+    if (age < 0) age += 29.530588853;
+    return NAMES[Math.floor(age) % 30] || '';
+  }
+
+  function fmtTideTime(minutes) {
+    var h = Math.floor(minutes / 60);
+    var m = minutes % 60;
+    return h + ':' + (m < 10 ? '0' : '') + m;
+  }
+
+  /** その日の潮位チャートSVGを作る */
+  function buildTideSvg(day, dateStr) {
+    var W = 340, H = 130, PADL = 30, PADR = 10, PADT = 16, PADB = 20;
+    var plotW = W - PADL - PADR, plotH = H - PADT - PADB;
+    var min = Math.min.apply(null, day.h), max = Math.max.apply(null, day.h);
+    day.hi.concat(day.lo).forEach(function (e) { min = Math.min(min, e[1]); max = Math.max(max, e[1]); });
+    var lo = Math.floor((min - 15) / 50) * 50;
+    var hi = Math.ceil((max + 15) / 50) * 50;
+    var xOf = function (minute) { return PADL + minute / 1440 * plotW; };
+    var yOf = function (cm) { return PADT + (hi - cm) / (hi - lo) * plotH; };
+
+    // 毎時24点+翌日0時相当は無いので23時まで。滑らかな単調ベジェで結ぶ
+    var pts = day.h.map(function (cm, i) { return [xOf(i * 60), yOf(cm)]; });
+    var d = 'M' + pts[0][0].toFixed(1) + ',' + pts[0][1].toFixed(1);
+    for (var i = 1; i < pts.length; i++) {
+      var x0 = pts[i - 1][0], y0 = pts[i - 1][1], x1 = pts[i][0], y1 = pts[i][1];
+      var cx = (x0 + x1) / 2;
+      d += ' C' + cx.toFixed(1) + ',' + y0.toFixed(1) + ' ' + cx.toFixed(1) + ',' + y1.toFixed(1) +
+           ' ' + x1.toFixed(1) + ',' + y1.toFixed(1);
+    }
+    var area = d + ' L' + pts[pts.length - 1][0].toFixed(1) + ',' + (PADT + plotH) +
+               ' L' + pts[0][0].toFixed(1) + ',' + (PADT + plotH) + ' Z';
+
+    // 目盛り: 横=6時間ごと、縦=50cmごと(控えめに)
+    var grid = '';
+    for (var hh = 0; hh <= 24; hh += 6) {
+      var gx = xOf(hh * 60);
+      grid += '<line class="tide-grid" x1="' + gx + '" y1="' + PADT + '" x2="' + gx + '" y2="' + (PADT + plotH) + '"/>' +
+        '<text class="tide-tick" x="' + gx + '" y="' + (H - 6) + '" text-anchor="middle">' + hh + '時</text>';
+    }
+    for (var cm = lo; cm <= hi; cm += 50) {
+      var gy = yOf(cm);
+      grid += '<line class="tide-grid" x1="' + PADL + '" y1="' + gy + '" x2="' + (W - PADR) + '" y2="' + gy + '"/>' +
+        '<text class="tide-tick" x="' + (PADL - 4) + '" y="' + (gy + 3) + '" text-anchor="end">' + cm + '</text>';
+    }
+
+    // 満潮・干潮マーカー
+    var marks = '';
+    day.hi.forEach(function (e) {
+      marks += '<circle class="tide-dot tide-dot--hi" cx="' + xOf(e[0]).toFixed(1) + '" cy="' + yOf(e[1]).toFixed(1) + '" r="4"/>' +
+        '<text class="tide-mark" x="' + xOf(e[0]).toFixed(1) + '" y="' + (yOf(e[1]) - 8).toFixed(1) + '" text-anchor="middle">' +
+          fmtTideTime(e[0]) + '</text>';
+    });
+    day.lo.forEach(function (e) {
+      marks += '<circle class="tide-dot tide-dot--lo" cx="' + xOf(e[0]).toFixed(1) + '" cy="' + yOf(e[1]).toFixed(1) + '" r="4"/>' +
+        '<text class="tide-mark" x="' + xOf(e[0]).toFixed(1) + '" y="' + (yOf(e[1]) + 15).toFixed(1) + '" text-anchor="middle">' +
+          fmtTideTime(e[0]) + '</text>';
+    });
+
+    // 現在時刻(表示日が今日のときだけ)
+    var nowMark = '';
+    if (dateStr === todayISO()) {
+      var now = new Date();
+      var nm = now.getHours() * 60 + now.getMinutes();
+      nowMark = '<line class="tide-now" x1="' + xOf(nm).toFixed(1) + '" y1="' + PADT +
+        '" x2="' + xOf(nm).toFixed(1) + '" y2="' + (PADT + plotH) + '"/>';
+    }
+
+    return '' +
+      '<svg class="tide-svg" viewBox="0 0 ' + W + ' ' + H + '" id="tide-svg" ' +
+          'data-lo="' + lo + '" data-hi="' + hi + '" role="img" aria-label="潮位グラフ">' +
+        grid +
+        '<path class="tide-area" d="' + area + '"/>' +
+        '<path class="tide-line" d="' + d + '"/>' +
+        nowMark + marks +
+        '<line class="tide-cursor" id="tide-cursor" x1="0" y1="' + PADT + '" x2="0" y2="' + (PADT + plotH) + '" hidden/>' +
+      '</svg>';
+  }
+
+  function renderTideCard() {
+    var t = tideData();
+    if (!t) return '';
+    var dateStr = tideDate();
+    var day = t.days[dateStr];
+    var canPrev = tideShiftDate(dateStr, -1) >= t.from;
+    var canNext = tideShiftDate(dateStr, 1) <= t.to;
+    var d = new Date(dateStr + 'T12:00:00');
+    var wd = '日月火水木金土'.charAt(d.getDay());
+    var title = (d.getMonth() + 1) + '/' + d.getDate() + '(' + wd + ')' +
+                (dateStr === todayISO() ? ' 今日' : '');
+
+    var body;
+    if (!day) {
+      body = '<p class="empty">この日の潮汐データはありません(' + esc(t.from) + '〜' + esc(t.to) + 'を収録)。</p>';
+    } else {
+      var hiTxt = day.hi.map(function (e) { return fmtTideTime(e[0]) + ' <strong>' + e[1] + '</strong>cm'; }).join('/');
+      var loTxt = day.lo.map(function (e) { return fmtTideTime(e[0]) + ' <strong>' + e[1] + '</strong>cm'; }).join('/');
+      body = buildTideSvg(day, dateStr) +
+        '<div class="tide-readout muted small" id="tide-readout" aria-live="polite">グラフをなぞると時刻ごとの潮位が見られます</div>' +
+        '<div class="tide-extremes">' +
+          '<span class="tide-ex"><span class="tide-ex__label">▲満潮</span> ' + hiTxt + '</span>' +
+          '<span class="tide-ex"><span class="tide-ex__label">▽干潮</span> ' + loTxt + '</span>' +
+        '</div>';
+    }
+
+    return '' +
+      '<section class="section">' +
+        '<div class="section__head">' +
+          '<h2 class="section__title">🌊 潮汐(石垣)</h2>' +
+          '<span class="tide-name">' + esc(tideNameOf(dateStr)) + '</span>' +
+          '<div class="section__spacer"></div>' +
+          '<div class="tide-nav">' +
+            '<button type="button" class="btn btn--icon btn--ghost" data-act="tide-prev" aria-label="前の日"' + (canPrev ? '' : ' disabled') + '>‹</button>' +
+            '<button type="button" class="btn btn--sm btn--ghost" data-act="tide-today">' + esc(title) + '</button>' +
+            '<button type="button" class="btn btn--icon btn--ghost" data-act="tide-next" aria-label="次の日"' + (canNext ? '' : ' disabled') + '>›</button>' +
+          '</div>' +
+        '</div>' +
+        '<div class="card tide-card">' + body +
+          '<p class="tide-src muted">' + esc(t.source) + '。ビーチ利用の目安にどうぞ。</p>' +
+        '</div>' +
+      '</section>';
+  }
+
+  /** グラフをなぞったとき、その時刻の潮位を読み上げる(線形補間) */
+  function bindTidePointer() {
+    document.addEventListener('pointermove', handleTidePointer, { passive: true });
+    document.addEventListener('pointerdown', handleTidePointer, { passive: true });
+  }
+
+  function handleTidePointer(ev) {
+    var svg = ev.target && ev.target.closest ? ev.target.closest('#tide-svg') : null;
+    var readout = $('#tide-readout');
+    var cursor = $('#tide-cursor');
+    if (!svg) return;
+    var t = tideData();
+    var day = t && t.days[tideDate()];
+    if (!day || !readout) return;
+    var rect = svg.getBoundingClientRect();
+    var frac = (ev.clientX - rect.left) / rect.width * 340;   // viewBox座標へ
+    var minute = Math.max(0, Math.min(1439, Math.round((frac - 30) / (340 - 40) * 1440)));
+    var h0 = Math.floor(minute / 60);
+    var h1 = Math.min(23, h0 + 1);
+    var f = minute / 60 - h0;
+    var cm = Math.round(day.h[h0] * (1 - f) + day.h[h1] * f);
+    readout.textContent = '🕒 ' + fmtTideTime(minute) + ' ごろ ・ 潮位 約' + cm + 'cm';
+    if (cursor) {
+      var x = 30 + minute / 1440 * (340 - 40);
+      cursor.setAttribute('x1', x.toFixed(1));
+      cursor.setAttribute('x2', x.toFixed(1));
+      cursor.hidden = false;
+    }
+  }
+
   /** よく使う予約(カート・レストラン)への大きな導線 */
   function renderReservationCard() {
     try {
@@ -1085,6 +1273,7 @@
         '<div class="section__head"><h2 class="section__title">🌤 石垣島の天気</h2></div>' +
         renderWeatherCard() +
       '</section>' +
+      renderTideCard() +
       renderTodaySchedule() +
       renderShareCard() +
       (storageAvailable ? '' :
@@ -3030,6 +3219,22 @@
       else resetMapView();
     },
 
+    /* 潮汐カード */
+    'tide-prev': function () {
+      var t = tideData();
+      var next = tideShiftDate(tideDate(), -1);
+      if (t && next >= t.from) { ui.tideDate = next; renderHome(); }
+    },
+    'tide-next': function () {
+      var t = tideData();
+      var next = tideShiftDate(tideDate(), 1);
+      if (t && next <= t.to) { ui.tideDate = next; renderHome(); }
+    },
+    'tide-today': function () {
+      ui.tideDate = null;
+      renderHome();
+    },
+
     /* v3: 部屋設定とルート案内 */
     'map-room-open': function () {
       ui.mapRoomForm = true;
@@ -3500,6 +3705,7 @@
 
   function init() {
     bindMapGestures();
+    bindTidePointer();
     migrateForSync();
     Sync.init({
       store: store,

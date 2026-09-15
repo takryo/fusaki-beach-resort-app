@@ -1853,3 +1853,103 @@ body.is-photo-open { overflow: hidden; }
   font-size: 22px;
   flex: none;
 }
+
+/* --- 潮汐カード ------------------------------------------------------------ */
+.tide-name {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-radius: 999px;
+  padding: 2px 9px;
+}
+
+.tide-nav {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.tide-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  touch-action: pan-y;
+}
+
+.tide-grid {
+  stroke: var(--border);
+  stroke-width: .6;
+}
+
+.tide-tick {
+  font-size: 8.5px;
+  fill: var(--text-mute);
+}
+
+.tide-line {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+
+.tide-area {
+  fill: var(--accent);
+  opacity: .12;
+  stroke: none;
+}
+
+.tide-dot {
+  fill: var(--surface);
+  stroke-width: 2.5;
+}
+
+.tide-dot--hi { stroke: var(--sunset); }
+.tide-dot--lo { stroke: var(--accent); }
+
+.tide-mark {
+  font-size: 9px;
+  font-weight: 600;
+  fill: var(--text-soft);
+}
+
+.tide-now {
+  stroke: var(--sunset);
+  stroke-width: 1.2;
+  stroke-dasharray: 3 3;
+}
+
+.tide-cursor {
+  stroke: var(--text-mute);
+  stroke-width: 1;
+  stroke-dasharray: 2 3;
+}
+
+.tide-readout {
+  text-align: center;
+  margin-top: 2px;
+  min-height: 1.4em;
+}
+
+.tide-extremes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  margin-top: 8px;
+  font-size: 12.5px;
+  color: var(--text-soft);
+}
+
+.tide-ex strong { color: var(--text); }
+
+.tide-ex__label {
+  font-weight: 700;
+  color: var(--text-mute);
+  margin-right: 2px;
+}
+
+.tide-src {
+  font-size: 11px;
+  margin-top: 8px;
+}
